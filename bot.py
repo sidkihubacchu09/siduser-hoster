@@ -31,10 +31,10 @@ from aiohttp import web
 # --------------------------
 # CONFIGURATION
 # --------------------------
-MASTER_API_ID = 123456          # Your API ID
-MASTER_API_HASH = "your_api_hash"
+MASTER_API_ID = 33491590         # Your API ID
+MASTER_API_HASH = "35eb3cd440c7ad282cfdc2ce557e37f6"
 MASTER_BOT_TOKEN = "8602762499:AAFO1ZuzFY6VgKXambFPdpWcvcfUthT6ATw"           # If using bot as master, set token here
-MASTER_SESSION_STRING = ""      # If using userbot as master, set session string
+MASTER_SESSION_STRING = "1"      # If using userbot as master, set session string
 
 HOSTED_BOTS = [
     # {"name": "Bot1", "token": "123456:ABC..."},
