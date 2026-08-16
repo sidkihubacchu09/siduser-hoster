@@ -95,7 +95,7 @@ ANIMATIONS.extend(NEW_ANIMATIONS)
 
 DB_PATH = "bot_hoster.db"
 HEALTH_CHECK_INTERVAL = 30
-WEB_PORT = 8080
+WEB_PORT = int(os.environ.get("PORT", "8080"))   # FIX: use Railway's PORT env
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_BOTS_DIR = os.path.join(BASE_DIR, "upload_bots")
 os.makedirs(UPLOAD_BOTS_DIR, exist_ok=True)
@@ -681,7 +681,7 @@ async def is_admin(user_id: int) -> bool:
     admins = await db_get_admins()
     return user_id in admins
 
-async def is_owner(user_id: int) -> bool:
+async def is_owner(user_id: int) -> bool:   # FIX: made async
     return user_id == OWNER_ID
 
 async def is_premium(user_id: int) -> bool:
@@ -702,7 +702,7 @@ async def is_premium(user_id: int) -> bool:
 # --------------------------
 # INLINE KEYBOARDS (extended)
 # --------------------------
-def main_menu_keyboard(user_id):
+async def main_menu_keyboard(user_id):   # FIX: made async
     buttons = [
         [InlineKeyboardButton("📋 List Bots", callback_data="list_bots"), InlineKeyboardButton("➕ Add Bot", callback_data="add_bot")],
         [InlineKeyboardButton("▶️ Start Bot", callback_data="start_bot"), InlineKeyboardButton("⏹️ Stop Bot", callback_data="stop_bot")],
@@ -717,7 +717,7 @@ def main_menu_keyboard(user_id):
         [InlineKeyboardButton("🎞️ More Animations", callback_data="extra_animation"), InlineKeyboardButton("❤️ Health", callback_data="health")],
         [InlineKeyboardButton("🌐 Web Dashboard", callback_data="web")],
     ]
-    if is_owner(user_id) or await is_admin(user_id):
+    if await is_owner(user_id) or await is_admin(user_id):
         buttons.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
     return InlineKeyboardMarkup(buttons)
 
@@ -1237,7 +1237,7 @@ async def start_command(client, message):
     await message.reply_text(
         "**🌊 Welcome to the Super Duper Bot Hoster!**\n"
         "Manage your hosted bots, userbots, and scripts with the menu below:",
-        reply_markup=main_menu_keyboard(user_id),
+        reply_markup=await main_menu_keyboard(user_id),   # FIX: await
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -1913,7 +1913,7 @@ async def handle_callback(client, callback_query: CallbackQuery):
     if data == "main_menu":
         await callback_query.message.edit_text(
             "**🌊 Main Menu**\nChoose an option:",
-            reply_markup=main_menu_keyboard(user_id),
+            reply_markup=await main_menu_keyboard(user_id),   # FIX: await
             parse_mode=ParseMode.MARKDOWN
         )
     elif data == "list_bots":
