@@ -45,7 +45,7 @@ import psutil
 # --------------------------
 MASTER_API_ID = 33491590
 MASTER_API_HASH = "35eb3cd440c7ad282cfdc2ce557e37f6"
-MASTER_BOT_TOKEN = "8683527113:AAFfA2njjEoEGRIsZPu-q4oLZHD837SB9Ug"   # unchanged
+MASTER_BOT_TOKEN = "8791579380:AAF_w5eoha_UirctSTcvp_I8m6FQGrfaYeo"   # unchanged
 MASTER_SESSION_STRING = None  # set if using userbot as master
 
 OWNER_ID = 2119464081
