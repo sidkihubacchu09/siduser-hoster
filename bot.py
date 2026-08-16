@@ -33,7 +33,7 @@ from aiohttp import web
 # --------------------------
 MASTER_API_ID = 123456          # Your API ID
 MASTER_API_HASH = "your_api_hash"
-MASTER_BOT_TOKEN = ""           # If using bot as master, set token here
+MASTER_BOT_TOKEN = "8602762499:AAFO1ZuzFY6VgKXambFPdpWcvcfUthT6ATw"           # If using bot as master, set token here
 MASTER_SESSION_STRING = ""      # If using userbot as master, set session string
 
 HOSTED_BOTS = [
