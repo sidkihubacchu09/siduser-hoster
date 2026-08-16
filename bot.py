@@ -9,8 +9,7 @@ SUPER DUPER TELEGRAM BOT HOSTER - ULTIMATE AQUATIC EDITION
 - Async performance with Pyrogram
 - Real-time database storage (aiosqlite)
 - Health check & auto-restart system
-- Web Dashboard with JS Animations (aiohttp)
-- Full web control, more animations
+- Full web control removed (aiohttp disabled)
 - Subscription, admin, broadcast system
 """
 
@@ -27,7 +26,7 @@ import zipfile
 import tempfile
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Tuple, Set
-import traceback   # added for detailed error logs
+import traceback
 
 # Pyrogram imports
 from pyrogram import Client, filters
@@ -38,9 +37,6 @@ from pyrogram.errors import FloodWait, SessionPasswordNeeded, PhoneCodeInvalid, 
 # Database import
 import aiosqlite
 
-# Web server import
-from aiohttp import web
-
 # Additional
 import psutil
 
@@ -50,14 +46,14 @@ import psutil
 MASTER_API_ID = 33491590
 MASTER_API_HASH = "35eb3cd440c7ad282cfdc2ce557e37f6"
 MASTER_BOT_TOKEN = "8602762499:AAHRU4hAlT6G94Iz5ZHmPEjekT80G5Z4fpk"
-MASTER_SESSION_STRING = None  # set if using userbot as master
+MASTER_SESSION_STRING = None
 
 OWNER_ID = 2119464081
 SUPPORT_USERNAME = "@fxrsale"
 MAX_USERBOTS_PER_USER = 3
 MAX_SCRIPTS_PER_USER = 10
 
-HOSTED_BOTS = []  # will be loaded from DB
+HOSTED_BOTS = []
 
 # --------------------------
 # ANIMATIONS (EXPANDED)
@@ -83,7 +79,6 @@ EXTRA_ANIMATIONS = [
     "https://media.giphy.com/media/3o7aTzG6i5tXlV6C7K/giphy.gif",
 ]
 
-# More new animations
 NEW_ANIMATIONS = [
     "https://media.giphy.com/media/3o6gb8e3wHnqCgG7Bm/giphy.gif",
     "https://media.giphy.com/media/3o6Zt8mJ8l3bXQG7eM/giphy.gif",
@@ -96,7 +91,6 @@ ANIMATIONS.extend(NEW_ANIMATIONS)
 
 DB_PATH = "bot_hoster.db"
 HEALTH_CHECK_INTERVAL = 30
-WEB_PORT = int(os.environ.get("PORT", "8080"))   # use Railway's PORT env
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_BOTS_DIR = os.path.join(BASE_DIR, "upload_bots")
 os.makedirs(UPLOAD_BOTS_DIR, exist_ok=True)
@@ -107,7 +101,6 @@ os.makedirs(UPLOAD_BOTS_DIR, exist_ok=True)
 async def init_db():
     """Create tables if they don't exist."""
     async with aiosqlite.connect(DB_PATH) as db:
-        # existing bots table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS bots (
                 name TEXT PRIMARY KEY,
@@ -115,7 +108,6 @@ async def init_db():
                 status TEXT DEFAULT 'stopped'
             )
         """)
-        # crash log
         await db.execute("""
             CREATE TABLE IF NOT EXISTS crash_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,7 +116,6 @@ async def init_db():
                 event TEXT
             )
         """)
-        # userbots table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS userbots (
                 name TEXT PRIMARY KEY,
@@ -133,7 +124,6 @@ async def init_db():
                 user_id INTEGER
             )
         """)
-        # users table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -143,13 +133,11 @@ async def init_db():
                 expiry TEXT
             )
         """)
-        # admins table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS admins (
                 user_id INTEGER PRIMARY KEY
             )
         """)
-        # user_files table (for arbitrary scripts)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS user_files (
                 user_id INTEGER,
@@ -158,27 +146,24 @@ async def init_db():
                 PRIMARY KEY (user_id, file_name)
             )
         """)
-        # subscriptions
         await db.execute("""
             CREATE TABLE IF NOT EXISTS subscriptions (
                 user_id INTEGER PRIMARY KEY,
                 expiry TEXT
             )
         """)
-        # blocked users
         await db.execute("""
             CREATE TABLE IF NOT EXISTS blocked (
                 user_id INTEGER PRIMARY KEY
             )
         """)
-        # insert owner as admin
         await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (OWNER_ID,))
         await db.commit()
 
 # --------------------------
 # DATABASE FUNCTIONS (extended)
 # --------------------------
-# Bots (existing)
+# Bots
 async def db_add_bot(name, token):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO bots (name, token, status) VALUES (?, ?, ?)", (name, token, "stopped"))
@@ -210,7 +195,7 @@ async def db_get_recent_logs(limit=5):
         cursor = await db.execute("SELECT bot_name, timestamp, event FROM crash_log ORDER BY id DESC LIMIT ?", (limit,))
         return await cursor.fetchall()
 
-# Userbots (extended with user_id)
+# Userbots
 async def db_add_userbot(name, session_string, user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO userbots (name, session_string, status, user_id) VALUES (?, ?, ?, ?)", (name, session_string, "stopped", user_id))
@@ -238,7 +223,7 @@ async def db_get_all_userbots():
         rows = await cursor.fetchall()
         return rows
 
-# User management
+# Users
 async def db_add_user(user_id, first_name):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR IGNORE INTO users (user_id, first_name, joined_at) VALUES (?, ?, ?)", (user_id, first_name, datetime.now().isoformat()))
@@ -277,7 +262,7 @@ async def db_get_admins():
         rows = await cursor.fetchall()
         return [row[0] for row in rows]
 
-# User files (for arbitrary scripts)
+# User files
 async def db_add_user_file(user_id, file_name, file_type):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO user_files (user_id, file_name, file_type) VALUES (?, ?, ?)", (user_id, file_name, file_type))
@@ -300,7 +285,6 @@ async def db_get_all_user_files():
         rows = await cursor.fetchall()
         return rows
 
-# Subscriptions (legacy, but we use users table premium)
 # Blocked
 async def db_block_user(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -318,7 +302,7 @@ async def db_is_blocked(user_id):
         return await cursor.fetchone() is not None
 
 # --------------------------
-# BOT MANAGER (unchanged)
+# BOT MANAGER
 # --------------------------
 class BotManager:
     def __init__(self):
@@ -419,7 +403,7 @@ class BotManager:
                         await db_log_crash(name, f"Auto-restart failed: {msg}")
 
 # --------------------------
-# USERBOT MANAGER (extended with user_id)
+# USERBOT MANAGER
 # --------------------------
 class UserbotManager:
     def __init__(self):
@@ -524,7 +508,7 @@ class UserbotManager:
                         await db_log_crash(f"userbot:{name}", f"Auto-restart failed: {msg}")
 
 # --------------------------
-# SCRIPT MANAGER (for arbitrary py/js scripts)
+# SCRIPT MANAGER
 # --------------------------
 class ScriptManager:
     def __init__(self):
@@ -538,23 +522,19 @@ class ScriptManager:
         return folder
 
     async def upload_script(self, user_id: int, file_name: str, file_content: bytes, file_type: str) -> Tuple[bool, str]:
-        # Check limit
         files = await db_get_user_files(user_id)
         if len(files) >= MAX_SCRIPTS_PER_USER:
             return False, f"Script limit ({MAX_SCRIPTS_PER_USER}) reached."
         user_folder = self.get_user_folder(user_id)
         file_path = os.path.join(user_folder, file_name)
-        # Check if already exists
         if os.path.exists(file_path):
             return False, f"File '{file_name}' already exists."
-        # Save file
         with open(file_path, 'wb') as f:
             f.write(file_content)
         await db_add_user_file(user_id, file_name, file_type)
         return True, f"File '{file_name}' uploaded."
 
     async def delete_script(self, user_id: int, file_name: str) -> Tuple[bool, str]:
-        # Stop if running
         script_key = f"{user_id}_{file_name}"
         if script_key in self.processes:
             self.stop_script(user_id, file_name)
@@ -576,7 +556,6 @@ class ScriptManager:
         file_path = os.path.join(user_folder, file_name)
         if not os.path.exists(file_path):
             return False
-        # Determine file type from extension
         ext = os.path.splitext(file_name)[1].lower()
         if ext == '.py':
             cmd = [sys.executable, file_path]
@@ -609,11 +588,6 @@ class ScriptManager:
                 process.kill()
             except:
                 pass
-        # close log file
-        log_path = self.log_files.get(script_key)
-        if log_path and os.path.exists(log_path):
-            # we can't close the file because it's owned by process, but we can reopen and append? Not needed.
-            pass
         del self.processes[script_key]
         del self.log_files[script_key]
         del self.script_info[script_key]
@@ -689,19 +663,17 @@ async def is_premium(user_id: int) -> bool:
     user = await db_get_user(user_id)
     if not user:
         return False
-    # user tuple: (user_id, first_name, joined_at, is_premium, expiry)
     if user[3] == 1:
         expiry = user[4]
         if expiry and datetime.fromisoformat(expiry) > datetime.now():
             return True
         else:
-            # expired
             await db_remove_premium(user_id)
             return False
     return False
 
 # --------------------------
-# INLINE KEYBOARDS (extended)
+# INLINE KEYBOARDS
 # --------------------------
 async def main_menu_keyboard(user_id):
     buttons = [
@@ -745,440 +717,9 @@ def userbot_selection_keyboard(action: str, user_id):
     buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="main_menu")])
     return InlineKeyboardMarkup(buttons), None
 
-def script_selection_keyboard(action: str, user_id):
-    files = asyncio.run(db_get_user_files(user_id))  # but we are in async, so we'll use a sync version? We'll handle in callback.
-    # We'll use a dict to avoid async issues.
-    return None, None  # will be handled in callback
-
 # --------------------------
-# WEB DASHBOARD (extended with scripts)
+# OTP LOGIN
 # --------------------------
-HTML_DASHBOARD = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>🌊 Super Duper Bot Hoster</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
-            color: white;
-            margin: 0;
-            padding: 20px;
-            animation: waveBackground 15s ease infinite;
-            background-size: 400% 400%;
-        }
-        @keyframes waveBackground {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        .container {
-            max-width: 1100px;
-            margin: 0 auto;
-        }
-        h1 {
-            text-align: center;
-            animation: float 3s ease-in-out infinite;
-        }
-        @keyframes float {
-            0% { transform: translateY(0px); }
-            50% { transform: translateY(-10px); }
-            100% { transform: translateY(0px); }
-        }
-        .bot-card {
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            padding: 15px;
-            margin: 10px 0;
-            backdrop-filter: blur(5px);
-            animation: fadeInUp 0.5s ease;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        @keyframes fadeInUp {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .status {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 10px;
-            animation: pulse 2s infinite;
-        }
-        .running { background: #4CAF50; }
-        .stopped { background: #f44336; }
-        @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7); }
-            70% { box-shadow: 0 0 0 10px rgba(76, 175, 80, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0); }
-        }
-        .controls {
-            display: flex;
-            gap: 5px;
-            flex-wrap: wrap;
-        }
-        .btn {
-            background: rgba(255, 255, 255, 0.2);
-            border: none;
-            color: white;
-            padding: 5px 10px;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: background 0.3s;
-        }
-        .btn:hover {
-            background: rgba(255, 255, 255, 0.4);
-        }
-        .bubble {
-            position: fixed;
-            bottom: -50px;
-            width: 20px;
-            height: 20px;
-            background: rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            animation: bubbleUp 10s linear infinite;
-        }
-        @keyframes bubbleUp {
-            0% { bottom: -50px; opacity: 0.8; }
-            100% { bottom: 110%; opacity: 0; }
-        }
-        .fish {
-            position: fixed;
-            font-size: 30px;
-            animation: swim linear infinite;
-        }
-        @keyframes swim {
-            0% { left: -10%; transform: translateX(0); }
-            100% { left: 110%; transform: translateX(0); }
-        }
-        .section-title {
-            font-size: 1.5em;
-            margin-top: 30px;
-            border-bottom: 1px solid rgba(255,255,255,0.3);
-            padding-bottom: 5px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🌊 Super Duper Bot Hoster</h1>
-        <button class="btn" onclick="fetchStatus()" style="margin-bottom:10px;">🔄 Refresh</button>
-        <div id="botList"></div>
-    </div>
-
-    <script>
-        function createBubbles() {
-            for (let i = 0; i < 20; i++) {
-                const bubble = document.createElement('div');
-                bubble.className = 'bubble';
-                bubble.style.left = Math.random() * 100 + '%';
-                bubble.style.animationDuration = (Math.random() * 8 + 5) + 's';
-                bubble.style.animationDelay = Math.random() * 5 + 's';
-                document.body.appendChild(bubble);
-            }
-        }
-
-        function createFish() {
-            const fishEmojis = ['🐟', '🐠', '🐡', '🦈', '🐙', '🦑'];
-            for (let i = 0; i < 8; i++) {
-                const fish = document.createElement('div');
-                fish.className = 'fish';
-                fish.textContent = fishEmojis[Math.floor(Math.random() * fishEmojis.length)];
-                fish.style.top = Math.random() * 80 + 10 + '%';
-                fish.style.animationDuration = (Math.random() * 10 + 8) + 's';
-                fish.style.animationDelay = Math.random() * 5 + 's';
-                document.body.appendChild(fish);
-            }
-        }
-
-        async function fetchStatus() {
-            try {
-                const response = await fetch('/api/status');
-                const data = await response.json();
-                const botList = document.getElementById('botList');
-                botList.innerHTML = '';
-                // Bots
-                if (data.bots.length > 0) {
-                    const header = document.createElement('div');
-                    header.className = 'section-title';
-                    header.textContent = '🤖 Hosted Bots';
-                    botList.appendChild(header);
-                    data.bots.forEach(bot => {
-                        const card = document.createElement('div');
-                        card.className = 'bot-card';
-                        card.innerHTML = `
-                            <div>
-                                <span class="status ${bot.status}"></span>
-                                <strong>${bot.name}</strong> - ${bot.status}
-                            </div>
-                            <div class="controls">
-                                <button class="btn" onclick="controlBot('start', '${bot.name}')">▶️ Start</button>
-                                <button class="btn" onclick="controlBot('stop', '${bot.name}')">⏹️ Stop</button>
-                                <button class="btn" onclick="controlBot('restart', '${bot.name}')">🔄 Restart</button>
-                                <button class="btn" onclick="controlBot('remove', '${bot.name}')">🗑️ Remove</button>
-                            </div>
-                        `;
-                        botList.appendChild(card);
-                    });
-                }
-                // Userbots
-                if (data.userbots.length > 0) {
-                    const header = document.createElement('div');
-                    header.className = 'section-title';
-                    header.textContent = '👥 Hosted Userbots';
-                    botList.appendChild(header);
-                    data.userbots.forEach(ubot => {
-                        const card = document.createElement('div');
-                        card.className = 'bot-card';
-                        card.innerHTML = `
-                            <div>
-                                <span class="status ${ubot.status}"></span>
-                                <strong>${ubot.name}</strong> - ${ubot.status} (userbot)
-                            </div>
-                            <div class="controls">
-                                <button class="btn" onclick="controlUserbot('start', '${ubot.name}')">▶️ Start</button>
-                                <button class="btn" onclick="controlUserbot('stop', '${ubot.name}')">⏹️ Stop</button>
-                                <button class="btn" onclick="controlUserbot('restart', '${ubot.name}')">🔄 Restart</button>
-                                <button class="btn" onclick="controlUserbot('remove', '${ubot.name}')">🗑️ Remove</button>
-                            </div>
-                        `;
-                        botList.appendChild(card);
-                    });
-                }
-                // Scripts
-                if (data.scripts.length > 0) {
-                    const header = document.createElement('div');
-                    header.className = 'section-title';
-                    header.textContent = '📁 Hosted Scripts';
-                    botList.appendChild(header);
-                    data.scripts.forEach(script => {
-                        const card = document.createElement('div');
-                        card.className = 'bot-card';
-                        card.innerHTML = `
-                            <div>
-                                <span class="status ${script.status}"></span>
-                                <strong>${script.name}</strong> - ${script.status} (${script.type})
-                            </div>
-                            <div class="controls">
-                                <button class="btn" onclick="controlScript('start', '${script.name}')">▶️ Start</button>
-                                <button class="btn" onclick="controlScript('stop', '${script.name}')">⏹️ Stop</button>
-                                <button class="btn" onclick="controlScript('logs', '${script.name}')">📜 Logs</button>
-                                <button class="btn" onclick="controlScript('delete', '${script.name}')">🗑️ Delete</button>
-                            </div>
-                        `;
-                        botList.appendChild(card);
-                    });
-                }
-            } catch (error) {
-                console.error('Error fetching status:', error);
-            }
-        }
-
-        async function controlBot(action, name) {
-            try {
-                const response = await fetch(`/api/bot/${action}/${name}`, { method: 'POST' });
-                const result = await response.json();
-                alert(result.message || result.error);
-                fetchStatus();
-            } catch (error) {
-                console.error('Error controlling bot:', error);
-                alert('Failed to perform action');
-            }
-        }
-
-        async function controlUserbot(action, name) {
-            try {
-                const response = await fetch(`/api/userbot/${action}/${name}`, { method: 'POST' });
-                const result = await response.json();
-                alert(result.message || result.error);
-                fetchStatus();
-            } catch (error) {
-                console.error('Error controlling userbot:', error);
-                alert('Failed to perform action');
-            }
-        }
-
-        async function controlScript(action, name) {
-            try {
-                const response = await fetch(`/api/script/${action}/${name}`, { method: 'POST' });
-                const result = await response.json();
-                alert(result.message || result.error);
-                fetchStatus();
-            } catch (error) {
-                console.error('Error controlling script:', error);
-                alert('Failed to perform action');
-            }
-        }
-
-        createBubbles();
-        createFish();
-        fetchStatus();
-        setInterval(fetchStatus, 5000);
-    </script>
-</body>
-</html>
-"""
-
-async def handle_web_index(request):
-    return web.Response(text=HTML_DASHBOARD, content_type='text/html')
-
-async def handle_api_status(request):
-    bots = [{"name": name, "status": info["status"]} for name, info in manager.bot_info.items()]
-    userbots = [{"name": name, "status": info["status"]} for name, info in userbot_manager.userbot_info.items()]
-    # Scripts: get all running scripts (we need to fetch from script_manager)
-    # We'll get all user files from DB and check status
-    scripts = []
-    all_files = await db_get_all_user_files()
-    for user_id, file_name, file_type in all_files:
-        status = "running" if script_manager.is_running(user_id, file_name) else "stopped"
-        scripts.append({"name": file_name, "status": status, "type": file_type})
-    return web.json_response({"bots": bots, "userbots": userbots, "scripts": scripts})
-
-# Bot API handlers
-async def handle_api_bot_start(request):
-    bot_name = request.match_info['name']
-    success, msg = await manager.start_bot(bot_name)
-    return web.json_response({"success": success, "message": msg})
-
-async def handle_api_bot_stop(request):
-    bot_name = request.match_info['name']
-    success, msg = await manager.stop_bot(bot_name)
-    return web.json_response({"success": success, "message": msg})
-
-async def handle_api_bot_restart(request):
-    bot_name = request.match_info['name']
-    success, msg = await manager.restart_bot(bot_name)
-    return web.json_response({"success": success, "message": msg})
-
-async def handle_api_bot_remove(request):
-    bot_name = request.match_info['name']
-    success, msg = await manager.remove_bot(bot_name)
-    return web.json_response({"success": success, "message": msg})
-
-# Userbot API handlers
-async def handle_api_userbot_start(request):
-    name = request.match_info['name']
-    success, msg = await userbot_manager.start_userbot(name)
-    return web.json_response({"success": success, "message": msg})
-
-async def handle_api_userbot_stop(request):
-    name = request.match_info['name']
-    success, msg = await userbot_manager.stop_userbot(name)
-    return web.json_response({"success": success, "message": msg})
-
-async def handle_api_userbot_restart(request):
-    name = request.match_info['name']
-    success, msg = await userbot_manager.restart_userbot(name)
-    return web.json_response({"success": success, "message": msg})
-
-async def handle_api_userbot_remove(request):
-    name = request.match_info['name']
-    success, msg = await userbot_manager.remove_userbot(name)
-    return web.json_response({"success": success, "message": msg})
-
-# Script API handlers
-async def handle_api_script_start(request):
-    name = request.match_info['name']
-    # Need to find user_id for this script from DB
-    # We'll assume the script name is unique across users, but we need user_id.
-    # We'll iterate files to find matching name.
-    all_files = await db_get_all_user_files()
-    for uid, fname, ftype in all_files:
-        if fname == name:
-            user_id = uid
-            break
-    else:
-        return web.json_response({"success": False, "message": "Script not found"})
-    # Check if already running
-    if script_manager.is_running(user_id, name):
-        return web.json_response({"success": False, "message": "Script already running"})
-    # We need a message object for logs? We'll just start without reply.
-    # We'll simulate a dummy message object.
-    class DummyMessage:
-        chat = None
-        reply_text = lambda self, text: None
-    dummy = DummyMessage()
-    success = script_manager.start_script(user_id, name, dummy)
-    if success:
-        return web.json_response({"success": True, "message": f"Started {name}"})
-    else:
-        return web.json_response({"success": False, "message": "Failed to start script"})
-
-async def handle_api_script_stop(request):
-    name = request.match_info['name']
-    all_files = await db_get_all_user_files()
-    for uid, fname, ftype in all_files:
-        if fname == name:
-            user_id = uid
-            break
-    else:
-        return web.json_response({"success": False, "message": "Script not found"})
-    if not script_manager.is_running(user_id, name):
-        return web.json_response({"success": False, "message": "Script not running"})
-    script_manager.stop_script(user_id, name)
-    return web.json_response({"success": True, "message": f"Stopped {name}"})
-
-async def handle_api_script_logs(request):
-    name = request.match_info['name']
-    all_files = await db_get_all_user_files()
-    for uid, fname, ftype in all_files:
-        if fname == name:
-            user_id = uid
-            break
-    else:
-        return web.json_response({"success": False, "message": "Script not found"})
-    log_content = script_manager.get_log(user_id, name)
-    return web.json_response({"success": True, "log": log_content})
-
-async def handle_api_script_delete(request):
-    name = request.match_info['name']
-    all_files = await db_get_all_user_files()
-    for uid, fname, ftype in all_files:
-        if fname == name:
-            user_id = uid
-            break
-    else:
-        return web.json_response({"success": False, "message": "Script not found"})
-    success, msg = await script_manager.delete_script(user_id, name)
-    return web.json_response({"success": success, "message": msg})
-
-def create_web_app():
-    app = web.Application()
-    app.router.add_get('/', handle_web_index)
-    app.router.add_get('/api/status', handle_api_status)
-    # Bot routes
-    app.router.add_post('/api/bot/start/{name}', handle_api_bot_start)
-    app.router.add_post('/api/bot/stop/{name}', handle_api_bot_stop)
-    app.router.add_post('/api/bot/restart/{name}', handle_api_bot_restart)
-    app.router.add_post('/api/bot/remove/{name}', handle_api_bot_remove)
-    # Userbot routes
-    app.router.add_post('/api/userbot/start/{name}', handle_api_userbot_start)
-    app.router.add_post('/api/userbot/stop/{name}', handle_api_userbot_stop)
-    app.router.add_post('/api/userbot/restart/{name}', handle_api_userbot_restart)
-    app.router.add_post('/api/userbot/remove/{name}', handle_api_userbot_remove)
-    # Script routes
-    app.router.add_post('/api/script/start/{name}', handle_api_script_start)
-    app.router.add_post('/api/script/stop/{name}', handle_api_script_stop)
-    app.router.add_post('/api/script/logs/{name}', handle_api_script_logs)
-    app.router.add_post('/api/script/delete/{name}', handle_api_script_delete)
-    return app
-
-async def start_web_server():
-    app = create_web_app()
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', WEB_PORT)
-    await site.start()
-    print(f"🌐 Web dashboard running on http://0.0.0.0:{WEB_PORT}")
-
-# --------------------------
-# OTP LOGIN (Pyrogram version)
-# --------------------------
-# We'll store pending logins temporarily
 pending_logins = {}
 
 async def start_otp_login(user_id, phone):
@@ -1295,7 +836,6 @@ async def help_command(client, message):
 @master.on_message(filters.command("host") & filters.private)
 async def host_command(client, message):
     user_id = message.from_user.id
-    # Check if user already has max userbots
     userbots = await db_get_userbots_for_user(user_id)
     if len(userbots) >= MAX_USERBOTS_PER_USER:
         await message.reply_text(f"⚠️ You already have {MAX_USERBOTS_PER_USER} userbots. Remove one first.")
@@ -1307,13 +847,6 @@ async def host_command(client, message):
     )
 
 @master.on_message(filters.command("host") & filters.private)
-async def host_phone(client, message):
-    # Actually, this is the same command. We need to parse args.
-    pass
-
-# We'll use a conversation-like approach via command steps.
-# For simplicity, we use separate commands: /host <phone>, /code <code>, /2fa <password>
-@master.on_message(filters.command("host") & filters.private)
 async def host_phone_command(client, message):
     user_id = message.from_user.id
     parts = message.text.split(maxsplit=1)
@@ -1323,7 +856,6 @@ async def host_phone_command(client, message):
     phone = parts[1].strip()
     if not phone.startswith('+'):
         phone = '+' + phone
-    # Check if user already has max userbots
     userbots = await db_get_userbots_for_user(user_id)
     if len(userbots) >= MAX_USERBOTS_PER_USER:
         await message.reply_text(f"⚠️ You already have {MAX_USERBOTS_PER_USER} userbots.")
@@ -1347,7 +879,6 @@ async def code_command(client, message):
         success, data = result
         if success:
             session_string = data
-            # Save userbot with a name
             name = f"ub_{user_id}_{int(time.time())}"
             success2, msg2 = await userbot_manager.add_userbot(name, session_string, user_id)
             if success2:
@@ -1385,7 +916,7 @@ async def twofa_command(client, message):
     else:
         await message.reply_text(f"❌ {result}")
 
-# Existing bot/userbot commands (from first script)
+# Existing bot commands
 @master.on_message(filters.command("addbot"))
 async def addbot_command(client, message):
     try:
@@ -1456,7 +987,7 @@ async def listbots_command(client, message):
     status_text = manager.get_status()
     await message.reply_text(f"**📋 Hosted Bots:**\n{status_text}", parse_mode=ParseMode.MARKDOWN)
 
-# Userbot commands (from first script)
+# Userbot commands
 @master.on_message(filters.command("removeuserbot"))
 async def removeuserbot_command(client, message):
     try:
@@ -1534,23 +1065,19 @@ async def handle_file_upload(client, message):
     if ext not in ['.py', '.js', '.zip']:
         await message.reply_text("⚠️ Only .py, .js, .zip allowed.")
         return
-    # Check limit
     files = await db_get_user_files(user_id)
     if len(files) >= MAX_SCRIPTS_PER_USER:
         await message.reply_text(f"⚠️ Script limit ({MAX_SCRIPTS_PER_USER}) reached.")
         return
-    # Download file
     file_path = await client.download_media(message, file_name=os.path.join(UPLOAD_BOTS_DIR, str(user_id), file_name))
     if not file_path:
         await message.reply_text("❌ Failed to download file.")
         return
-    # If zip, extract and find main script
     if ext == '.zip':
         temp_dir = tempfile.mkdtemp(prefix=f"user_{user_id}_zip_")
         try:
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
-            # Find main script
             py_files = []
             js_files = []
             for root, dirs, files_in in os.walk(temp_dir):
@@ -1562,7 +1089,6 @@ async def handle_file_upload(client, message):
             if not py_files and not js_files:
                 await message.reply_text("❌ No .py or .js found in archive.")
                 return
-            # Move all files to user folder, keeping structure
             user_folder = script_manager.get_user_folder(user_id)
             for root, dirs, files_in in os.walk(temp_dir):
                 for f in files_in:
@@ -1571,10 +1097,8 @@ async def handle_file_upload(client, message):
                     dst = os.path.join(user_folder, rel_path)
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     shutil.move(src, dst)
-            # Choose main script
             main_script = None
             if py_files:
-                # Prefer main.py, bot.py, app.py
                 for pref in ['main.py', 'bot.py', 'app.py']:
                     for p in py_files:
                         if os.path.basename(p) == pref:
@@ -1597,10 +1121,8 @@ async def handle_file_upload(client, message):
                     main_script = js_files[0]
                 file_type = 'js'
             main_script_name = os.path.basename(main_script)
-            # Save to DB
             await db_add_user_file(user_id, main_script_name, file_type)
             await message.reply_text(f"✅ Archive extracted and main script `{main_script_name}` registered.")
-            # Optionally install requirements if requirements.txt exists
             req_path = os.path.join(user_folder, 'requirements.txt')
             if os.path.exists(req_path):
                 await message.reply_text("🔄 Installing Python dependencies...")
@@ -1609,7 +1131,6 @@ async def handle_file_upload(client, message):
                     await message.reply_text("✅ Dependencies installed.")
                 except subprocess.CalledProcessError as e:
                     await message.reply_text(f"❌ Failed to install dependencies: {e.stderr.decode()}")
-            # npm install if package.json
             pkg_path = os.path.join(user_folder, 'package.json')
             if os.path.exists(pkg_path):
                 await message.reply_text("🔄 Installing Node dependencies...")
@@ -1618,7 +1139,6 @@ async def handle_file_upload(client, message):
                     await message.reply_text("✅ Node dependencies installed.")
                 except subprocess.CalledProcessError as e:
                     await message.reply_text(f"❌ Failed to install Node deps: {e.stderr.decode()}")
-            # Optionally start automatically?
         except Exception as e:
             await message.reply_text(f"❌ Error processing zip: {e}")
         finally:
@@ -1626,7 +1146,6 @@ async def handle_file_upload(client, message):
             os.remove(file_path)
         return
     else:
-        # Single file
         file_type = 'py' if ext == '.py' else 'js'
         await db_add_user_file(user_id, file_name, file_type)
         await message.reply_text(f"✅ File `{file_name}` uploaded. Use /files to manage.")
@@ -1805,25 +1324,21 @@ async def broadcast_command(client, message):
     if not message.reply_to_message:
         await message.reply_text("Reply to a message to broadcast.")
         return
-    # Broadcast to all users
-    # We need to get all users from DB
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT user_id FROM users")
         users = [row[0] for row in await cursor.fetchall()]
     if not users:
         await message.reply_text("No users to broadcast.")
         return
-    # Forward the replied message to all users
     await message.reply_text(f"📢 Broadcasting to {len(users)} users...")
     success_count = 0
     for uid in users:
         try:
             await message.reply_to_message.copy(uid)
             success_count += 1
-        except Exception as e:
-            # ignore
+        except Exception:
             pass
-        await asyncio.sleep(0.1)  # avoid flood
+        await asyncio.sleep(0.1)
     await message.reply_text(f"✅ Broadcast sent to {success_count} users.")
 
 @master.on_message(filters.command("stats") & filters.private)
@@ -1856,7 +1371,6 @@ async def lock_bot(client, message):
     if not await is_admin(message.from_user.id):
         await message.reply_text("⚠️ Admin only.")
         return
-    # Implement lock flag (globally)
     global bot_locked
     bot_locked = True
     await message.reply_text("🔒 Bot locked. Only admins can use commands.")
@@ -1888,7 +1402,7 @@ async def extra_animation_command(client, message):
 
 @master.on_message(filters.command("web") | filters.command("dashboard"))
 async def web_command(client, message):
-    await message.reply_text(f"🌐 **Web Dashboard:**\nhttp://localhost:{WEB_PORT}\nOpen in browser to see animated status.", parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text("🌐 Web dashboard is disabled in this version. Only Telegram commands work.")
 
 @master.on_message(filters.command("health"))
 async def health_command(client, message):
@@ -1950,7 +1464,6 @@ async def handle_callback(client, callback_query: CallbackQuery):
             success, msg = await manager.remove_bot(bot_name)
         await callback_query.message.edit_text(msg, reply_markup=back_to_main(), parse_mode=ParseMode.MARKDOWN)
 
-    # Userbot callbacks
     elif data == "list_userbots":
         status_text = userbot_manager.get_status(user_id)
         await callback_query.message.edit_text(
@@ -1984,7 +1497,6 @@ async def handle_callback(client, callback_query: CallbackQuery):
             success, msg = await userbot_manager.remove_userbot(name)
         await callback_query.message.edit_text(msg, reply_markup=back_to_main(), parse_mode=ParseMode.MARKDOWN)
 
-    # Script callbacks (simplified: we'll show files and actions)
     elif data == "list_scripts":
         files = await db_get_user_files(user_id)
         if not files:
@@ -1996,14 +1508,12 @@ async def handle_callback(client, callback_query: CallbackQuery):
             running = script_manager.is_running(user_id, fname)
             status = "🟢 Running" if running else "🔴 Stopped"
             lines.append(f"`{fname}` ({ftype}) - {status}")
-            # Add buttons for each file
             kb.add(InlineKeyboardButton(f"{fname} - {status}", callback_data=f"script_{user_id}_{fname}"))
         kb.add(InlineKeyboardButton("⬅️ Back", callback_data="main_menu"))
         await callback_query.message.edit_text("📁 **Your Scripts:**\n" + "\n".join(lines), reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
     elif data == "upload_script":
         await callback_query.message.edit_text("📤 Reply to this message with your Python/JS file or ZIP.", reply_markup=back_to_main())
     elif data.startswith("script_"):
-        # Handle individual script controls
         _, uid_str, fname = data.split("_", 2)
         uid = int(uid_str)
         if uid != user_id and not await is_admin(user_id):
@@ -2055,7 +1565,6 @@ async def handle_callback(client, callback_query: CallbackQuery):
         success, msg = await script_manager.delete_script(uid, fname)
         await callback_query.message.edit_text(msg, reply_markup=back_to_main())
 
-    # Other callbacks
     elif data == "ping":
         start = time.time()
         await callback_query.message.edit_text("🏓 Pinging...")
@@ -2082,7 +1591,7 @@ async def handle_callback(client, callback_query: CallbackQuery):
         )
     elif data == "web":
         await callback_query.message.edit_text(
-            f"🌐 **Web Dashboard:**\nhttp://localhost:{WEB_PORT}\n\nYou can control bots, userbots, and scripts from the browser!",
+            "🌐 Web dashboard is disabled. Use Telegram commands only.",
             reply_markup=back_to_main()
         )
     elif data == "admin_panel":
@@ -2099,7 +1608,6 @@ async def handle_callback(client, callback_query: CallbackQuery):
         kb.add(InlineKeyboardButton("⬅️ Back", callback_data="main_menu"))
         await callback_query.message.edit_text("👑 **Admin Panel**", reply_markup=kb)
     elif data == "stats":
-        # Trigger stats command
         await stats_command(client, callback_query.message)
     elif data == "list_admins":
         admins = await db_get_admins()
@@ -2130,15 +1638,14 @@ async def health_check_loop():
             print(f"Health check error: {e}")
 
 # --------------------------
-# MAIN ENTRY POINT with robust error handling
+# MAIN ENTRY POINT
 # --------------------------
 bot_locked = False
 
 async def main():
-    print("🌊 Starting Super Duper Bot Hoster (Ultimate Edition)...")
+    print("🌊 Starting Super Duper Bot Hoster (Ultimate Edition - Web Disabled)...")
     print(f"Using token: {MASTER_BOT_TOKEN[:10]}... (masked)")
 
-    # 1. Database init
     try:
         await init_db()
         print("✅ Database initialized.")
@@ -2147,7 +1654,6 @@ async def main():
         traceback.print_exc()
         sys.exit(1)
 
-    # 2. Load bots
     try:
         await manager.load_from_db()
         print(f"✅ Loaded {len(manager.bot_info)} bots from DB.")
@@ -2156,7 +1662,6 @@ async def main():
         traceback.print_exc()
         sys.exit(1)
 
-    # 3. Load userbots
     try:
         await userbot_manager.load_from_db()
         print(f"✅ Loaded {len(userbot_manager.userbot_info)} userbots from DB.")
@@ -2165,7 +1670,6 @@ async def main():
         traceback.print_exc()
         sys.exit(1)
 
-    # 4. Start master client
     try:
         await master.start()
         print("✅ Master client started.")
@@ -2174,17 +1678,11 @@ async def main():
         traceback.print_exc()
         sys.exit(1)
 
-    # 5. Start background tasks
     asyncio.create_task(health_check_loop())
     print("✅ Health check loop started.")
 
-    # 6. Start web server (non‑critical – log error but continue)
-    try:
-        await start_web_server()
-        print(f"✅ Web server running on port {WEB_PORT}.")
-    except Exception as e:
-        print("❌ Web server failed to start (but bot will keep running):")
-        traceback.print_exc()
+    # Web server is intentionally not started
+    print("🌐 Web dashboard is DISABLED (as requested).")
 
     print("✅ Master control is running. Press Ctrl+C to stop.")
     await asyncio.Event().wait()
