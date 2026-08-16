@@ -9,8 +9,8 @@ SUPER DUPER TELEGRAM BOT HOSTER - ULTIMATE AQUATIC EDITION
 - Async performance with Pyrogram
 - Real-time database storage (aiosqlite)
 - Health check & auto-restart system
-- Full web control removed (aiohttp disabled)
 - Subscription, admin, broadcast system
+- Web dashboard REMOVED – Telegram bot only
 """
 
 import asyncio
@@ -45,8 +45,8 @@ import psutil
 # --------------------------
 MASTER_API_ID = 33491590
 MASTER_API_HASH = "35eb3cd440c7ad282cfdc2ce557e37f6"
-MASTER_BOT_TOKEN = "8602762499:AAHRU4hAlT6G94Iz5ZHmPEjekT80G5Z4fpk"
-MASTER_SESSION_STRING = None
+MASTER_BOT_TOKEN = "8602762499:AAHRU4hAlT6G94Iz5ZHmPEjekT80G5Z4fpk"   # unchanged
+MASTER_SESSION_STRING = None  # set if using userbot as master
 
 OWNER_ID = 2119464081
 SUPPORT_USERNAME = "@fxrsale"
@@ -827,7 +827,7 @@ async def help_command(client, message):
 - `/ping` - Check latency
 - `/animation` - Random aquatic GIF
 - `/extra_animation` - Extra GIFs
-- `/web` - Web dashboard link
+- `/web` - Web dashboard link (disabled)
 - `/health` - Health check
 """
     await message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
@@ -1402,7 +1402,7 @@ async def extra_animation_command(client, message):
 
 @master.on_message(filters.command("web") | filters.command("dashboard"))
 async def web_command(client, message):
-    await message.reply_text("🌐 Web dashboard is disabled in this version. Only Telegram commands work.")
+    await message.reply_text("🌐 Web dashboard is disabled. Use Telegram commands only.")
 
 @master.on_message(filters.command("health"))
 async def health_command(client, message):
@@ -1464,6 +1464,7 @@ async def handle_callback(client, callback_query: CallbackQuery):
             success, msg = await manager.remove_bot(bot_name)
         await callback_query.message.edit_text(msg, reply_markup=back_to_main(), parse_mode=ParseMode.MARKDOWN)
 
+    # Userbot callbacks
     elif data == "list_userbots":
         status_text = userbot_manager.get_status(user_id)
         await callback_query.message.edit_text(
@@ -1497,6 +1498,7 @@ async def handle_callback(client, callback_query: CallbackQuery):
             success, msg = await userbot_manager.remove_userbot(name)
         await callback_query.message.edit_text(msg, reply_markup=back_to_main(), parse_mode=ParseMode.MARKDOWN)
 
+    # Script callbacks
     elif data == "list_scripts":
         files = await db_get_user_files(user_id)
         if not files:
@@ -1565,6 +1567,7 @@ async def handle_callback(client, callback_query: CallbackQuery):
         success, msg = await script_manager.delete_script(uid, fname)
         await callback_query.message.edit_text(msg, reply_markup=back_to_main())
 
+    # Other callbacks
     elif data == "ping":
         start = time.time()
         await callback_query.message.edit_text("🏓 Pinging...")
@@ -1643,9 +1646,10 @@ async def health_check_loop():
 bot_locked = False
 
 async def main():
-    print("🌊 Starting Super Duper Bot Hoster (Ultimate Edition - Web Disabled)...")
+    print("🌊 Starting Super Duper Bot Hoster (Telegram Bot Only)...")
     print(f"Using token: {MASTER_BOT_TOKEN[:10]}... (masked)")
 
+    # 1. Database init
     try:
         await init_db()
         print("✅ Database initialized.")
@@ -1654,6 +1658,7 @@ async def main():
         traceback.print_exc()
         sys.exit(1)
 
+    # 2. Load bots
     try:
         await manager.load_from_db()
         print(f"✅ Loaded {len(manager.bot_info)} bots from DB.")
@@ -1662,6 +1667,7 @@ async def main():
         traceback.print_exc()
         sys.exit(1)
 
+    # 3. Load userbots
     try:
         await userbot_manager.load_from_db()
         print(f"✅ Loaded {len(userbot_manager.userbot_info)} userbots from DB.")
@@ -1670,6 +1676,7 @@ async def main():
         traceback.print_exc()
         sys.exit(1)
 
+    # 4. Start master client
     try:
         await master.start()
         print("✅ Master client started.")
@@ -1678,11 +1685,12 @@ async def main():
         traceback.print_exc()
         sys.exit(1)
 
+    # 5. Start background tasks
     asyncio.create_task(health_check_loop())
     print("✅ Health check loop started.")
 
     # Web server is intentionally not started
-    print("🌐 Web dashboard is DISABLED (as requested).")
+    print("🌐 Web dashboard is DISABLED (only Telegram bot).")
 
     print("✅ Master control is running. Press Ctrl+C to stop.")
     await asyncio.Event().wait()
