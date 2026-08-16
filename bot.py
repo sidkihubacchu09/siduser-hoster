@@ -27,6 +27,7 @@ import zipfile
 import tempfile
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Tuple, Set
+import traceback   # added for detailed error logs
 
 # Pyrogram imports
 from pyrogram import Client, filters
@@ -48,7 +49,7 @@ import psutil
 # --------------------------
 MASTER_API_ID = 33491590
 MASTER_API_HASH = "35eb3cd440c7ad282cfdc2ce557e37f6"
-MASTER_BOT_TOKEN = "8602762499:AAHRU4hAlT6G94Iz5ZHmPEjekT80G5Z4fpk"   # UPDATED TOKEN
+MASTER_BOT_TOKEN = "8602762499:AAHRU4hAlT6G94Iz5ZHmPEjekT80G5Z4fpk"
 MASTER_SESSION_STRING = None  # set if using userbot as master
 
 OWNER_ID = 2119464081
@@ -95,7 +96,7 @@ ANIMATIONS.extend(NEW_ANIMATIONS)
 
 DB_PATH = "bot_hoster.db"
 HEALTH_CHECK_INTERVAL = 30
-WEB_PORT = int(os.environ.get("PORT", "8080"))   # FIX: use Railway's PORT env
+WEB_PORT = int(os.environ.get("PORT", "8080"))   # use Railway's PORT env
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_BOTS_DIR = os.path.join(BASE_DIR, "upload_bots")
 os.makedirs(UPLOAD_BOTS_DIR, exist_ok=True)
@@ -681,7 +682,7 @@ async def is_admin(user_id: int) -> bool:
     admins = await db_get_admins()
     return user_id in admins
 
-async def is_owner(user_id: int) -> bool:   # FIX: made async
+async def is_owner(user_id: int) -> bool:
     return user_id == OWNER_ID
 
 async def is_premium(user_id: int) -> bool:
@@ -702,7 +703,7 @@ async def is_premium(user_id: int) -> bool:
 # --------------------------
 # INLINE KEYBOARDS (extended)
 # --------------------------
-async def main_menu_keyboard(user_id):   # FIX: made async
+async def main_menu_keyboard(user_id):
     buttons = [
         [InlineKeyboardButton("📋 List Bots", callback_data="list_bots"), InlineKeyboardButton("➕ Add Bot", callback_data="add_bot")],
         [InlineKeyboardButton("▶️ Start Bot", callback_data="start_bot"), InlineKeyboardButton("⏹️ Stop Bot", callback_data="stop_bot")],
@@ -1237,7 +1238,7 @@ async def start_command(client, message):
     await message.reply_text(
         "**🌊 Welcome to the Super Duper Bot Hoster!**\n"
         "Manage your hosted bots, userbots, and scripts with the menu below:",
-        reply_markup=await main_menu_keyboard(user_id),   # FIX: await
+        reply_markup=await main_menu_keyboard(user_id),
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -1913,7 +1914,7 @@ async def handle_callback(client, callback_query: CallbackQuery):
     if data == "main_menu":
         await callback_query.message.edit_text(
             "**🌊 Main Menu**\nChoose an option:",
-            reply_markup=await main_menu_keyboard(user_id),   # FIX: await
+            reply_markup=await main_menu_keyboard(user_id),
             parse_mode=ParseMode.MARKDOWN
         )
     elif data == "list_bots":
@@ -2129,18 +2130,62 @@ async def health_check_loop():
             print(f"Health check error: {e}")
 
 # --------------------------
-# MAIN ENTRY POINT
+# MAIN ENTRY POINT with robust error handling
 # --------------------------
 bot_locked = False
 
 async def main():
     print("🌊 Starting Super Duper Bot Hoster (Ultimate Edition)...")
-    await init_db()
-    await manager.load_from_db()
-    await userbot_manager.load_from_db()
-    await master.start()
+    print(f"Using token: {MASTER_BOT_TOKEN[:10]}... (masked)")
+
+    # 1. Database init
+    try:
+        await init_db()
+        print("✅ Database initialized.")
+    except Exception as e:
+        print("❌ Database init failed:")
+        traceback.print_exc()
+        sys.exit(1)
+
+    # 2. Load bots
+    try:
+        await manager.load_from_db()
+        print(f"✅ Loaded {len(manager.bot_info)} bots from DB.")
+    except Exception as e:
+        print("❌ Failed to load bots:")
+        traceback.print_exc()
+        sys.exit(1)
+
+    # 3. Load userbots
+    try:
+        await userbot_manager.load_from_db()
+        print(f"✅ Loaded {len(userbot_manager.userbot_info)} userbots from DB.")
+    except Exception as e:
+        print("❌ Failed to load userbots:")
+        traceback.print_exc()
+        sys.exit(1)
+
+    # 4. Start master client
+    try:
+        await master.start()
+        print("✅ Master client started.")
+    except Exception as e:
+        print("❌ Master client start failed:")
+        traceback.print_exc()
+        sys.exit(1)
+
+    # 5. Start background tasks
     asyncio.create_task(health_check_loop())
-    asyncio.create_task(start_web_server())
+    print("✅ Health check loop started.")
+
+    # 6. Start web server (non‑critical – log error but continue)
+    try:
+        await start_web_server()
+        print(f"✅ Web server running on port {WEB_PORT}.")
+    except Exception as e:
+        print("❌ Web server failed to start (but bot will keep running):")
+        traceback.print_exc()
+
     print("✅ Master control is running. Press Ctrl+C to stop.")
     await asyncio.Event().wait()
 
@@ -2149,3 +2194,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n🛑 Shutting down...")
+    except Exception as e:
+        print("Unhandled exception in main loop:")
+        traceback.print_exc()
