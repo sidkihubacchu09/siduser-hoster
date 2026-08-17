@@ -94,8 +94,8 @@ def to_float(value, default=None):
 
 def get_panel_price_info(service, country):
     """
-    Read the live panel price from getPrices and returns both
-    the cheapest price and its associated operator.
+    Strictly reads the live panel price from getPrices and returns both
+    the cheapest price and its associated operator where stock is available.
     """
     data = sasta_api_call({
         "action": "getPrices",
@@ -106,62 +106,55 @@ def get_panel_price_info(service, country):
     if not isinstance(data, dict) or data.get("status") == "ERROR":
         return None, "any"
 
+    country_str = str(country)
+    service_str = str(service)
+
+    # Navigate to the correct level in the JSON response
+    # Format is usually {"country": {"service": {"operator": {"cost": x, "count": y}}}}
+    target_dict = {}
+    if country_str in data and isinstance(data[country_str], dict):
+        if service_str in data[country_str] and isinstance(data[country_str][service_str], dict):
+            target_dict = data[country_str][service_str]
+        else:
+            target_dict = data[country_str]
+    elif service_str in data and isinstance(data[service_str], dict):
+        target_dict = data[service_str]
+    else:
+        target_dict = data
+
     best_price = float('inf')
     best_operator = "any"
     found = False
 
-    # Recursive search to hunt down the cheapest price inside the complex JSON dictionary
-    def search_dict(d, parent_key="any"):
-        nonlocal best_price, best_operator, found
-        if not isinstance(d, dict):
-            return
-
-        # Case 1: The dictionary itself has cost/count keys
-        cost = d.get("cost", d.get("price"))
-        if cost is not None:
-            count = d.get("count", 1)
-            try:
-                p_val = float(cost)
-                c_val = float(count)
-                if c_val > 0 and p_val < best_price:
-                    best_price = p_val
-                    best_operator = parent_key
-                    found = True
-            except (ValueError, TypeError):
-                pass
-
-        # Case 2: Deep dive into operators and price-quantity formats
-        for k, v in d.items():
-            if isinstance(v, (int, float, str)) and k not in ("cost", "price", "count"):
+    for key, value in target_dict.items():
+        # Format A: "operator_name": {"cost": 43.57, "count": 100}
+        if isinstance(value, dict):
+            cost = value.get("cost", value.get("price"))
+            count = value.get("count", 0)
+            if cost is not None:
                 try:
-                    p_val = float(k)
-                    c_val = float(v)
+                    p_val = float(cost)
+                    c_val = int(count)
                     if c_val > 0 and p_val < best_price:
                         best_price = p_val
-                        best_operator = parent_key
+                        best_operator = str(key)
                         found = True
                 except (ValueError, TypeError):
                     pass
-            elif isinstance(v, dict):
-                search_dict(v, str(k))
-
-    country_str = str(country)
-    service_str = str(service)
-    
-    # Isolate only the selected country and service to search
-    target_data = data
-    if country_str in data and isinstance(data[country_str], dict):
-        if service_str in data[country_str] and isinstance(data[country_str][service_str], dict):
-            target_data = data[country_str][service_str]
-        else:
-            target_data = data[country_str]
-            
-    search_dict(target_data)
-    
+                    
+        # Format B: "43.57": 100  (key is the price, value is the stock count)
+        elif isinstance(value, (int, float, str)):
+            try:
+                p_val = float(key)
+                c_val = int(value)
+                if c_val > 0 and p_val < best_price:
+                    best_price = p_val
+                    best_operator = "any"
+                    found = True
+            except (ValueError, TypeError):
+                pass
+                
     if found:
-        # Fallback if parent_key falsely matched a root level key name
-        if best_operator in (country_str, service_str, "cost", "price", "count"):
-            best_operator = "any"
         return best_price, best_operator
         
     return None, "any"
@@ -449,7 +442,7 @@ def country_selected(call):
 
     bot.edit_message_text(
         f"📞 <b>Service:</b> {service_name}\n🌍 <b>Country:</b> {country_code}\n\n"
-        f"💰 <b>Panel Price:</b> <code>{panel_price:.2f}</code> INR\n"
+        f"💰 <b>Real-Time Panel Price:</b> <code>{panel_price:.2f}</code> INR\n\n"
         f"Confirm purchase?",
         chat_id,
         call.message.message_id,
@@ -727,5 +720,5 @@ def back_to_menu(call):
 # ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with live panel price protection (cheapest operator)...")
+print("🔥 SastaOTP Bot is running with live panel price protection (strict parser)...")
 bot.infinity_polling()
