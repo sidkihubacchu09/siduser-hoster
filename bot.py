@@ -94,7 +94,7 @@ def to_float(value, default=None):
 
 def get_all_prices(service, country):
     """
-    Returns a sorted list of (price, operator) available for this service/country.
+    Returns a sorted list of all (price, operator) pairs available for this service/country.
     """
     data = sasta_api_call({
         "action": "getPrices",
@@ -109,6 +109,7 @@ def get_all_prices(service, country):
     country_str = str(country)
     service_str = str(service)
 
+    # Drill down to the correct dict block
     target_data = data
     if country_str in target_data and isinstance(target_data[country_str], dict):
         target_data = target_data[country_str]
@@ -121,33 +122,45 @@ def get_all_prices(service, country):
         if not isinstance(d, dict):
             return
             
+        # Check if the block has direct cost/price objects
         cost = d.get("cost", d.get("price"))
+        count = d.get("count", 0)
         if cost is not None:
             try:
                 p = float(cost)
-                if p > 0:
+                c = int(count)
+                if p > 0 and c >= 1: 
                     price_list.append((p, current_op))
             except:
                 pass
-            return
 
+        # Scan for nested operators or dynamic price keys
         for k, v in d.items():
+            if k in ("cost", "price", "count"):
+                continue
             if isinstance(v, (int, float, str)) and str(k).replace('.','',1).isdigit():
                 try:
                     p = float(k)
-                    if p > 0:
+                    c = int(v)
+                    if p > 0 and c >= 1:
                         price_list.append((p, current_op))
                 except:
                     pass
             elif isinstance(v, dict):
                 next_op = current_op
-                if str(k) not in (country_str, service_str, "cost", "price", "count"):
+                if str(k) not in (country_str, service_str):
                     next_op = str(k)
                 scan(v, next_op)
 
     scan(target_data)
-    price_list.sort(key=lambda x: x[0])
-    return price_list
+    
+    # Remove duplicates and sort by price lowest to highest
+    unique_prices = {}
+    for p, op in price_list:
+        if p not in unique_prices:
+            unique_prices[p] = op
+            
+    return sorted(unique_prices.items(), key=lambda x: x[0])
 
 def get_panel_price_info(service, country):
     """
@@ -439,7 +452,7 @@ def country_selected(call):
     bot.answer_callback_query(call.id)
 
 # ============================================
-# CONFIRM / CANCEL BUY (WITH CHEAP -> CURRENT PANEL FALLBACK)
+# CONFIRM / CANCEL BUY (WITH SMART FALLBACK)
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data in ["confirm_buy", "cancel_buy", "confirm_fallback_buy"])
 def confirm_cancel_buy(call):
@@ -462,7 +475,7 @@ def confirm_cancel_buy(call):
     panel_price = user_selection[user_id].get("panel_price")
     operator = user_selection[user_id].get("operator", "any")
 
-    # Step 1: Request with the cheapest option
+    # Step 1: Request number with the exact price protection
     number_params = {
         "action": "getNumber",
         "service": service,
@@ -476,14 +489,14 @@ def confirm_cancel_buy(call):
 
     data = sasta_api_call(number_params)
 
-    # Step 2: Fallback logic if the cheap option is out of stock / maxprice exceeded
+    # Step 2: Fallback logic if the cheap option fails
     if data.get("status") != "OK":
         err_msg = str(data.get("message", "")).lower()
         
-        # If it failed due to maxPrice / no numbers on the cheap pool, check panel's active standard price
-        if call.data != "confirm_fallback_buy" and ("maxprice" in err_msg or "max_price" in err_msg or "price" in err_msg or "no_numbers" in err_msg):
+        # If it failed due to stock issues, show the next real price
+        if call.data != "confirm_fallback_buy" and "balance" not in err_msg and "key" not in err_msg:
             all_prices = get_all_prices(service, country)
-            # Find the next higher price that is the active standard panel price
+            # Find the next higher price available on the panel
             std_candidates = [p for p in all_prices if p[0] > (panel_price or 0)]
             
             if std_candidates:
@@ -496,9 +509,10 @@ def confirm_cancel_buy(call):
                 markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy"))
 
                 bot.edit_message_text(
-                    f"⚠️ <b>Cheap route ({panel_price:.2f} INR) is currently out of stock.</b>\n\n"
-                    f"📊 <b>Current Available Panel Price:</b> <code>{current_panel_price:.2f}</code> INR\n\n"
-                    f"Would you like to buy at the current panel price?",
+                    f"⚠️ <b>Cheap route ({panel_price:.2f} INR) is out of stock!</b>\n\n"
+                    f"The panel rejected the purchase because the {panel_price:.2f} INR numbers are currently unavailable.\n\n"
+                    f"📊 <b>Next Available Panel Price:</b> <code>{current_panel_price:.2f}</code> INR\n\n"
+                    f"Would you like to buy at this updated panel price?",
                     chat_id,
                     call.message.message_id,
                     reply_markup=markup,
@@ -508,7 +522,7 @@ def confirm_cancel_buy(call):
                 return
 
         bot.edit_message_text(
-            f"❌ <b>Failed to get number:</b>\n<code>{data.get('message', 'Unknown error')}</code>",
+            f"❌ <b>Failed to get number:</b>\n<code>{data.get('message', 'Unknown error')}</code>\n\nThe panel currently has no stock for this route.",
             chat_id, call.message.message_id, parse_mode="HTML"
         )
         bot.answer_callback_query(call.id)
