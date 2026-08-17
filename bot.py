@@ -1,6 +1,7 @@
 import telebot
 import requests
 import sqlite3
+import time
 import json
 from telebot import types
 
@@ -8,21 +9,18 @@ from telebot import types
 # CONFIG
 # ============================================
 BOT_TOKEN = "8732063177:AAFjqxNLHh0moa_8daUbThK3zVoi_B6wXSU"
-API_KEY = "eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE4MTAzMTA2ODUsImlhdCI6MTc3ODc3NDY4NSwicmF5IjoiNTgzYWVkN2M3NGJkZWJiMjY5ZGVmZTQ0YWJkZDkzMjYiLCJzdWIiOjQwNzA0Nzh9.Ug1AK9DI7Yz4fUPFGQaOpzMolLX2IaY5rGgr_dL98Z2oIZIFwzsVKUckSq7TRjKFRhfuK8mLbk5pVwAa-R1wkwNBrua-0rKDjzVWZdDQ-9Kygpmw46HIBqxJ3MvSKeYutbJtsZyVKpUG5WLSNL08JkDKBfTLfOBw3dGZyj8hJzzP01N0gCvIsqm0cMkPNyTQpMPAbYHjPq9JzEsdIZ2lb5WDryCcB6FCOyWeRT-sA1pIfTwv63UR_l0oShA0XH0jwzNqeKRjj291V9PvbWMg0gnH2or_-H_Q6dct4V7M8Tsr36CR_LhDEOfL18DjAbVfWGN0o_k7YPkdVg1aanBGbQ"
+
+SASTA_API_KEY = "stp_0ac4e9ace00367b27b27afe499242f59e73c405035866819"
+SASTA_BASE_URL = "https://sastasms.pro/stubs/handler_api.php"
 
 ADMIN_ID = 2119464081
 ADMIN_CHAT_ID = -1003941256566
-UPI_ID = "mr.sid@ptyes"
+UPI_ID = "7722026588@ptaxis"
 
 # ============================================
 # BOT INIT
 # ============================================
 bot = telebot.TeleBot(BOT_TOKEN)
-
-headers = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Accept": "application/json"
-}
 
 # ============================================
 # DATABASE
@@ -51,7 +49,8 @@ cursor.execute('''
 CREATE TABLE IF NOT EXISTS activations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
-    order_id TEXT,
+    activation_id TEXT,
+    order_id INTEGER,
     number TEXT,
     service TEXT,
     country TEXT,
@@ -62,83 +61,51 @@ CREATE TABLE IF NOT EXISTS activations (
 conn.commit()
 
 # ============================================
-# HELPERS: 5SIM API
+# HELPERS
 # ============================================
-def get_5sim_balance():
+def sasta_api_call(params):
+    params["api_key"] = SASTA_API_KEY
     try:
-        r = requests.get("https://5sim.net/v1/user/profile", headers=headers)
-        data = r.json()
-        return data.get("balance", 0.0)
-    except:
-        return None
-
-def get_5sim_prices(service, country):
-    """Fetch price for a given service and country. Returns price as float or None."""
-    try:
-        # 5SIM price endpoint: /v1/guest/prices?country=india&operator=any
-        url = f"https://5sim.net/v1/guest/prices?country={country}&operator=any"
-        r = requests.get(url, headers=headers)
-        data = r.json()
-        # Data structure: { "country": { "operator": { "service": price } } }
-        # We want price for the specified service
-        price = data.get(country, {}).get("any", {}).get(service)
-        if price is not None:
-            return float(price)
-        return None
-    except:
-        return None
-
-def buy_5sim_number(service, country):
-    """Purchase a number. Returns dict with order_id, phone, price."""
-    url = f"https://5sim.net/v1/user/buy/activation/{country}/any/{service}"
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        return {"error": f"HTTP {r.status_code}: {r.text}"}
-    data = r.json()
-    if 'id' not in data:
-        return {"error": f"API error: {data}"}
-    return {
-        "order_id": data['id'],
-        "phone": data['phone'],
-        "price": float(data.get('price', 0.0))
-    }
-
-def check_5sim_sms(order_id):
-    """Check SMS for a given order ID. Returns list of SMS codes."""
-    url = f"https://5sim.net/v1/user/check/{order_id}"
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        return {"error": f"HTTP {r.status_code}"}
-    data = r.json()
-    sms_list = data.get('sms', [])
-    codes = [sms.get('code', '') for sms in sms_list if sms.get('code')]
-    return {"codes": codes}
+        resp = requests.get(SASTA_BASE_URL, params=params, timeout=15)
+        if resp.status_code == 200:
+            try:
+                return resp.json()
+            except:
+                text = resp.text.strip()
+                if ':' in text:
+                    parts = text.split(':', 1)
+                    return {"status": "OK", parts[0]: parts[1]}
+                else:
+                    return {"status": "ERROR", "message": text}
+        else:
+            return {"status": "ERROR", "message": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
 
 # ============================================
-# SERVICES & COUNTRIES (mapped to 5SIM names)
+# SERVICES & COUNTRIES
 # ============================================
 SERVICES = {
-    "Telegram": "telegram",
-    "WhatsApp": "whatsapp",
-    "Instagram": "instagram",
-    "Facebook": "facebook",
-    "Google": "google",
-    "Amazon": "amazon",
-    "Uber": "uber",
+    "Telegram": "tg",
+    "WhatsApp": "wa",
+    "Instagram": "ig",
+    "Facebook": "fb",
+    "Google": "go",
+    "Amazon": "am",
+    "Uber": "ub",
 }
 
-# 5SIM uses country names like "india", "usa", etc.
 COUNTRIES = {
-    "🇮🇳 India": "india",
-    "🇺🇸 USA": "usa",
-    "🇬🇧 UK": "uk",
-    "🇷🇺 Russia": "russia",
-    "🇨🇦 Canada": "canada",
-    "🇦🇺 Australia": "australia",
-    "🇩🇪 Germany": "germany",
-    "🇫🇷 France": "france",
-    "🇪🇸 Spain": "spain",
-    "🇧🇷 Brazil": "brazil",
+    "🇮🇳 India": "91",
+    "🇺🇸 USA": "1",
+    "🇬🇧 UK": "44",
+    "🇷🇺 Russia": "7",
+    "🇨🇦 Canada": "1",
+    "🇦🇺 Australia": "61",
+    "🇩🇪 Germany": "49",
+    "🇫🇷 France": "33",
+    "🇪🇸 Spain": "34",
+    "🇧🇷 Brazil": "55",
 }
 
 # Temporary storage for user selections
@@ -171,7 +138,7 @@ def start(message):
         bot.send_animation(
             chat_id,
             animation="https://media.giphy.com/media/RDZo7znAdn2u7sAcWH/giphy.gif",
-            caption="🔥 <b>Welcome to Advanced 5SIM Bot</b>\n"
+            caption="🔥 <b>Welcome to SastaOTP Bot</b>\n"
                     "✦ ── ── ── ── ── ── ✦\n"
                     "⚡ Fast & cheap virtual numbers\n"
                     "💎 24/7 OTP delivery",
@@ -211,24 +178,26 @@ def wallet(message):
     balance = row[0] if row else 0
     bot.reply_to(
         message,
-        f"<b>💰 Wallet Balance</b>\n✦ ── ── ── ── ✦\n<code>{balance:.2f}</code> USD",
+        f"<b>💰 Wallet Balance</b>\n✦ ── ── ── ── ✦\n<code>{balance:.2f}</code> INR",
         parse_mode="HTML"
     )
 
 # ============================================
-# API BALANCE (5SIM)
+# API BALANCE (SastaOTP)
 # ============================================
 @bot.message_handler(func=lambda m: m.text == "💰 Balance")
 def api_balance(message):
-    bal = get_5sim_balance()
-    if bal is None:
-        bot.reply_to(message, "❌ Failed to fetch API balance.")
-    else:
+    data = sasta_api_call({"action": "getBalance"})
+    if data.get("status") == "OK":
+        bal = data.get("balance") or data.get("ACCESS_BALANCE") or 0.0
+        currency = data.get("currency", "INR")
         bot.reply_to(
             message,
-            f"<b>🌐 5SIM Balance</b>\n✦ ── ── ── ── ✦\n<code>{bal:.2f}</code> USD",
+            f"<b>🌐 SastaOTP Balance</b>\n✦ ── ── ── ── ✦\n<code>{bal}</code> {currency}",
             parse_mode="HTML"
         )
+    else:
+        bot.reply_to(message, f"❌ <b>Error:</b> {data.get('message', 'Unknown')}", parse_mode="HTML")
 
 # ============================================
 # ADD FUNDS (UPI)
@@ -255,7 +224,7 @@ def buy_number(message):
     row = cursor.fetchone()
     balance = row[0] if row else 0
 
-    if balance < 0.01:
+    if balance < 1:
         bot.reply_to(message, "❌ <b>Insufficient wallet balance.</b>\nPlease add funds via ➕ Add Funds.", parse_mode="HTML")
         return
 
@@ -275,6 +244,7 @@ def service_selected(call):
     user_id = call.from_user.id
     service_code = call.data.split("_")[1]
 
+    # Store selected service
     if user_id not in user_selection:
         user_selection[user_id] = {}
     user_selection[user_id]["service"] = service_code
@@ -288,7 +258,7 @@ def service_selected(call):
     bot.answer_callback_query(call.id)
 
 # ============================================
-# COUNTRY SELECTION CALLBACK (Fetch price from 5SIM)
+# COUNTRY SELECTION CALLBACK (FIXED PRICE)
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("country_"))
 def country_selected(call):
@@ -296,35 +266,53 @@ def country_selected(call):
     user_id = call.from_user.id
     country_code = call.data.split("_")[1]
 
+    # Store selected country
     user_selection[user_id]["country"] = country_code
+
     service = user_selection[user_id]["service"]
 
-    # Fetch price from 5SIM
-    price = get_5sim_prices(service, country_code)
+    # Fetch price from SastaOTP
+    price_data = sasta_api_call({
+        "action": "getPrices",
+        "service": service,
+        "country": country_code,
+        "format": "json"
+    })
 
+    price = None
+    if price_data.get("status") == "OK":
+        # Try to extract price from nested structure: prices[country][service]
+        try:
+            price = price_data["prices"][country_code][service]
+        except (KeyError, TypeError):
+            # Fallback: try direct 'price' field
+            price = price_data.get("price")
+    # If price is still None, set to 0.0 to avoid errors, but we'll show "Unknown"
     if price is None:
         price = 0.0
         confirm_text = "⚠️ Could not fetch price. Continue anyway?"
     else:
-        confirm_text = f"💰 <b>Price:</b> <code>{price:.2f}</code> USD\nConfirm purchase?"
+        price = float(price)
+        confirm_text = f"💰 <b>Price:</b> <code>{price:.2f}</code> INR\nConfirm purchase?"
 
+    # Store the exact price for later deduction
     user_selection[user_id]["price"] = price
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy"))
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy"))
 
-    service_name = [name for name, code in SERVICES.items() if code == service][0]
-    country_name = [name for name, code in COUNTRIES.items() if code == country_code][0]
+    # Show service name (get from SERVICES dict by code)
+    service_name = [name for name, code in SERVICES.items() if code == service][0] if service in [code for code in SERVICES.values()] else service
 
     bot.edit_message_text(
-        f"📞 <b>Service:</b> {service_name}\n🌍 <b>Country:</b> {country_name}\n{confirm_text}",
+        f"📞 <b>Service:</b> {service_name}\n🌍 <b>Country:</b> {country_code}\n{confirm_text}",
         chat_id, call.message.message_id, reply_markup=markup, parse_mode="HTML"
     )
     bot.answer_callback_query(call.id)
 
 # ============================================
-# CONFIRM / CANCEL BUY (Purchase from 5SIM)
+# CONFIRM / CANCEL BUY (FIXED DEDUCTION)
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data in ["confirm_buy", "cancel_buy"])
 def confirm_cancel_buy(call):
@@ -334,6 +322,7 @@ def confirm_cancel_buy(call):
     if call.data == "cancel_buy":
         bot.edit_message_text("❌ Purchase cancelled.", chat_id, call.message.message_id)
         bot.answer_callback_query(call.id)
+        # Clean up temp data
         if user_id in user_selection:
             del user_selection[user_id]
         return
@@ -343,26 +332,31 @@ def confirm_cancel_buy(call):
     country = user_selection[user_id]["country"]
     price = user_selection[user_id].get("price", 0.0)
 
-    # Buy number from 5SIM
-    result = buy_5sim_number(service, country)
+    # Call getNumber
+    data = sasta_api_call({
+        "action": "getNumber",
+        "service": service,
+        "country": country,
+        "format": "json"
+    })
 
-    if "error" in result:
+    if data.get("status") != "OK":
         bot.edit_message_text(
-            f"❌ <b>Failed to get number:</b>\n<code>{result['error']}</code>",
+            f"❌ <b>Failed to get number:</b>\n<code>{data.get('message', 'Unknown error')}</code>",
             chat_id, call.message.message_id, parse_mode="HTML"
         )
         bot.answer_callback_query(call.id)
+        # Clean up
         if user_id in user_selection:
             del user_selection[user_id]
         return
 
-    order_id = result["order_id"]
-    phone = result["phone"]
-    actual_price = result["price"]
-
-    # Use the fetched price (if available) else fallback to actual_price from buy response
+    activation_id = data.get("activation_id")
+    order_id = data.get("order_id")
+    number = data.get("number")
+    # Use the stored price for deduction (if price is 0.0, fallback to what getNumber returns)
     if price <= 0.0:
-        price = actual_price
+        price = float(data.get("price", 0.0))
 
     # Deduct balance
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
@@ -373,23 +367,24 @@ def confirm_cancel_buy(call):
 
     # Store activation
     cursor.execute(
-        "INSERT INTO activations (user_id, order_id, number, service, country, status) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, order_id, phone, service, country, "active")
+        "INSERT INTO activations (user_id, activation_id, order_id, number, service, country, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user_id, activation_id, order_id, number, service, country, "active")
     )
     conn.commit()
 
     text = (
         f"✅ <b>Number Purchased!</b>\n✦ ── ── ── ── ── ✦\n"
-        f"📞 <b>Number:</b> <code>{phone}</code>\n"
-        f"🆔 <b>Order ID:</b> <code>{order_id}</code>\n"
-        f"💰 <b>Price:</b> <code>{price:.2f}</code> USD\n"
-        f"💳 <b>New Balance:</b> <code>{new_balance:.2f}</code> USD\n\n"
-        f"📩 Use <b>Check SMS</b> and send the Order ID to get your OTP."
+        f"📞 <b>Number:</b> <code>{number}</code>\n"
+        f"🆔 <b>Activation ID:</b> <code>{activation_id}</code>\n"
+        f"🔢 <b>Order ID:</b> <code>{order_id}</code>\n"
+        f"💰 <b>Price:</b> <code>{price:.2f}</code> INR\n"
+        f"💳 <b>New Balance:</b> <code>{new_balance:.2f}</code> INR\n\n"
+        f"📩 Use <b>Check SMS</b> and send the Activation ID to get your OTP."
     )
     bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="HTML")
     bot.answer_callback_query(call.id)
 
-    # Clean up
+    # Clean up temp data
     if user_id in user_selection:
         del user_selection[user_id]
 
@@ -398,36 +393,49 @@ def confirm_cancel_buy(call):
 # ============================================
 @bot.message_handler(func=lambda m: m.text == "📩 Check SMS")
 def check_sms(message):
-    msg = bot.reply_to(message, "📨 <b>Send your Order ID</b> to retrieve SMS.", parse_mode="HTML")
+    msg = bot.reply_to(message, "📨 <b>Send your Activation ID</b> (or Order ID) to retrieve SMS.", parse_mode="HTML")
     bot.register_next_step_handler(msg, fetch_sms)
 
 def fetch_sms(message):
-    order_id = message.text.strip()
+    user_input = message.text.strip()
     user_id = message.from_user.id
+    chat_id = message.chat.id
 
-    # Verify that this order belongs to the user (optional)
     cursor.execute(
-        "SELECT order_id FROM activations WHERE order_id=? AND user_id=?",
-        (order_id, user_id)
+        "SELECT activation_id FROM activations WHERE (activation_id=? OR order_id=?) AND user_id=?",
+        (user_input, user_input, user_id)
     )
-    if not cursor.fetchone():
-        bot.reply_to(message, "❌ <b>No activation found</b> with that Order ID.\nMake sure you own this number.", parse_mode="HTML")
+    row = cursor.fetchone()
+    if not row:
+        bot.reply_to(message, "❌ <b>No activation found</b> with that ID.\nMake sure you own this number.", parse_mode="HTML")
         return
 
-    result = check_5sim_sms(order_id)
+    activation_id = row[0]
 
-    if "error" in result:
-        bot.reply_to(message, f"❌ Error: {result['error']}")
-        return
+    data = sasta_api_call({
+        "action": "getStatus",
+        "id": activation_id
+    })
 
-    codes = result["codes"]
-    if not codes:
-        bot.reply_to(message, "⌛ <b>No SMS yet.</b>\nPlease wait and try again later.", parse_mode="HTML")
+    status = data.get("status")
+    if status == "STATUS_OK" or status == "OK":
+        code = data.get("code") or data.get("sms") or data.get("message")
+        if code:
+            bot.reply_to(
+                message,
+                f"📩 <b>SMS Received</b>\n✦ ── ── ── ── ✦\n🔑 <b>OTP Code:</b> <code>{code}</code>",
+                parse_mode="HTML"
+            )
+        else:
+            bot.reply_to(message, "⌛ <b>No SMS yet.</b>\nPlease wait and try again later.", parse_mode="HTML")
+    elif "WAIT" in status or status == "STATUS_WAIT_CODE":
+        bot.reply_to(message, "⏳ <b>Waiting for SMS...</b>\nWe'll notify you when it arrives.\nUse /check again later.", parse_mode="HTML")
     else:
-        text = "📩 <b>SMS Received</b>\n✦ ── ── ── ── ✦\n"
-        for code in codes:
-            text += f"🔑 <code>{code}</code>\n"
-        bot.reply_to(message, text, parse_mode="HTML")
+        bot.reply_to(
+            message,
+            f"❌ <b>Error:</b> {data.get('message', 'Unknown response')}\n{json.dumps(data, indent=2)}",
+            parse_mode="HTML"
+        )
 
 # ============================================
 # PAYMENT SCREENSHOT HANDLER
@@ -453,7 +461,7 @@ def payment_photo(message):
         f"📥 <b>New Payment Request</b>\n✦ ── ── ── ── ✦\n"
         f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
         f"🆔 <b>Payment ID:</b> <code>{payment_id}</code>\n"
-        f"💰 <b>Amount:</b> 100 USD"
+        f"💰 <b>Amount:</b> 100 INR"
     )
 
     try:
@@ -488,7 +496,7 @@ def admin_payment_callback(call):
         cursor.execute("UPDATE payments SET status='approved' WHERE payment_id=?", (payment_id,))
         conn.commit()
 
-        bot.send_message(int(user_id), f"✅ <b>Payment Approved!</b>\n💰 <code>{amount}</code> USD added to your wallet.", parse_mode="HTML")
+        bot.send_message(int(user_id), f"✅ <b>Payment Approved!</b>\n💰 <code>{amount}</code> INR added to your wallet.", parse_mode="HTML")
         bot.answer_callback_query(call.id, "✅ Approved")
 
     elif data.startswith("reject"):
@@ -541,5 +549,5 @@ def back_to_menu(call):
 # ============================================
 # RUN
 # ============================================
-print("🔥 Advanced 5SIM Bot is running with service/country selection...")
+print("🔥 SastaOTP Bot is running with reply keyboard and service selection...")
 bot.infinity_polling()
