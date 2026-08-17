@@ -164,7 +164,7 @@ def get_all_prices(service, country):
 
 def get_panel_price_info(service, country):
     """
-    Gets the lowest price first, along with its operator.
+    Gets the live cheapest panel price and its operator.
     """
     prices = get_all_prices(service, country)
     if prices:
@@ -173,32 +173,58 @@ def get_panel_price_info(service, country):
 
 def build_service_keyboard(animation_frame=0):
     markup = types.InlineKeyboardMarkup(row_width=2)
-    frames = ("⚡", "✨", "💠", "✨")
+    frames = ("⚡", "✨", "💠", "🔹", "🔷", "💎", "🌟", "✨")
     logo = frames[animation_frame % len(frames)]
 
     for name, code in SERVICES.items():
-        text = f"{logo} {name}" if animation_frame % 2 == 0 else f"{name} {logo}"
+        phase = animation_frame % 4
+        if phase == 0:
+            text = f"{logo} {name}"
+        elif phase == 1:
+            text = f"{name} {logo}"
+        elif phase == 2:
+            text = f"✦ {name} {logo}"
+        else:
+            text = f"{logo} {name} ✦"
         markup.add(types.InlineKeyboardButton(text, callback_data=f"service_{code}"))
 
-    markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back"))
+    markup.add(types.InlineKeyboardButton(f"✨ Back to Menu ✨", callback_data="menu_back"))
     return markup
 
 def build_country_keyboard(animation_frame=0):
     markup = types.InlineKeyboardMarkup(row_width=2)
-    frames = ("⚡", "✨", "💠", "✨")
+    frames = ("🌍", "✨", "🌐", "💫", "🔹", "💠", "🌟", "✨")
     logo = frames[animation_frame % len(frames)]
 
     for name, code in COUNTRIES.items():
-        text = f"{logo} {name}" if animation_frame % 2 == 0 else f"{name} {logo}"
+        phase = animation_frame % 4
+        if phase == 0:
+            text = f"{logo} {name}"
+        elif phase == 1:
+            text = f"{name} {logo}"
+        elif phase == 2:
+            text = f"✦ {name} {logo}"
+        else:
+            text = f"{logo} {name} ✦"
         markup.add(types.InlineKeyboardButton(text, callback_data=f"country_{code}"))
 
-    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="service_back"))
+    markup.add(types.InlineKeyboardButton("✨ Back ✨", callback_data="service_back"))
+    return markup
+
+def build_confirm_keyboard(animation_frame=0):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    frames = ("✅", "✔️", "💚", "🟢", "✅", "💚")
+    confirm_logo = frames[animation_frame % len(frames)]
+    cancel_frames = ("❌", "✖️", "🔴", "❌")
+    cancel_logo = cancel_frames[animation_frame % len(cancel_frames)]
+    markup.add(types.InlineKeyboardButton(f"{confirm_logo} Confirm Purchase {confirm_logo}", callback_data="confirm_buy"))
+    markup.add(types.InlineKeyboardButton(f"{cancel_logo} Cancel {cancel_logo}", callback_data="cancel_buy"))
     return markup
 
 # Message-id -> animation token. A new callback cancels the old animation.
 button_animation_tokens = {}
 
-def animate_button_logo(chat_id, message_id, keyboard_builder, frames=4, delay=0.45):
+def animate_button_logo(chat_id, message_id, keyboard_builder, frames=8, delay=0.35):
     token = object()
     button_animation_tokens[message_id] = token
 
@@ -436,9 +462,7 @@ def country_selected(call):
     user_selection[user_id]["panel_price"] = panel_price
     user_selection[user_id]["operator"] = best_operator
 
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy"))
-    markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy"))
+    markup = build_confirm_keyboard(0)
 
     bot.edit_message_text(
         f"📞 <b>Service:</b> {service_name}\n🌍 <b>Country:</b> {country_code}\n\n"
@@ -449,15 +473,17 @@ def country_selected(call):
         reply_markup=markup,
         parse_mode="HTML"
     )
+    animate_button_logo(chat_id, call.message.message_id, build_confirm_keyboard)
     bot.answer_callback_query(call.id)
 
 # ============================================
-# CONFIRM / CANCEL BUY (WITH SMART FALLBACK)
+# CONFIRM / CANCEL BUY (SMART CHEAPEST -> LIVE PANEL FALLBACK)
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data in ["confirm_buy", "cancel_buy", "confirm_fallback_buy"])
 def confirm_cancel_buy(call):
     chat_id = call.message.chat.id
     user_id = call.from_user.id
+    cancel_button_animation(call.message.message_id)
 
     if call.data == "cancel_buy":
         bot.edit_message_text("❌ Purchase cancelled.", chat_id, call.message.message_id)
@@ -472,77 +498,95 @@ def confirm_cancel_buy(call):
 
     service = user_selection[user_id]["service"]
     country = user_selection[user_id]["country"]
-    panel_price = user_selection[user_id].get("panel_price")
-    operator = user_selection[user_id].get("operator", "any")
 
-    # Step 1: Request number with the exact price protection
-    number_params = {
-        "action": "getNumber",
-        "service": service,
-        "country": country,
-        "operator": operator,
-        "format": "json"
-    }
-
-    if panel_price is not None:
-        number_params["maxPrice"] = f"{panel_price:.2f}"
-
-    data = sasta_api_call(number_params)
-
-    # Step 2: Fallback logic if the cheap option fails
-    if data.get("status") != "OK":
-        err_msg = str(data.get("message", "")).lower()
-        
-        # If it failed due to stock issues, show the next real price
-        if call.data != "confirm_fallback_buy" and "balance" not in err_msg and "key" not in err_msg:
-            all_prices = get_all_prices(service, country)
-            # Find the next higher price available on the panel
-            std_candidates = [p for p in all_prices if p[0] > (panel_price or 0)]
-            
-            if std_candidates:
-                current_panel_price, std_operator = std_candidates[0]
-                user_selection[user_id]["panel_price"] = current_panel_price
-                user_selection[user_id]["operator"] = std_operator
-
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("✅ Confirm at Current Price", callback_data="confirm_fallback_buy"))
-                markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy"))
-
-                bot.edit_message_text(
-                    f"⚠️ <b>Cheap route ({panel_price:.2f} INR) is out of stock!</b>\n\n"
-                    f"The panel rejected the purchase because the {panel_price:.2f} INR numbers are currently unavailable.\n\n"
-                    f"📊 <b>Next Available Panel Price:</b> <code>{current_panel_price:.2f}</code> INR\n\n"
-                    f"Would you like to buy at this updated panel price?",
-                    chat_id,
-                    call.message.message_id,
-                    reply_markup=markup,
-                    parse_mode="HTML"
-                )
-                bot.answer_callback_query(call.id)
-                return
-
+    # Refresh panel prices at the moment of purchase. This prevents a stale maxPrice error.
+    all_prices = get_all_prices(service, country)
+    if not all_prices:
         bot.edit_message_text(
-            f"❌ <b>Failed to get number:</b>\n<code>{data.get('message', 'Unknown error')}</code>\n\nThe panel currently has no stock for this route.",
+            "❌ <b>No live numbers available.</b>\nThe panel currently has no available price for this service/country.",
             chat_id, call.message.message_id, parse_mode="HTML"
         )
         bot.answer_callback_query(call.id)
-        if user_id in user_selection:
-            del user_selection[user_id]
+        user_selection.pop(user_id, None)
+        return
+
+    # Cheapest price/operator first. Then move through the real live panel options.
+    tried = set()
+    data = None
+    selected_panel_price = None
+    selected_operator = "any"
+    last_error = "Unknown error"
+
+    for expected_price, expected_operator in all_prices:
+        key = (round(expected_price, 6), str(expected_operator))
+        if key in tried:
+            continue
+        tried.add(key)
+
+        # IMPORTANT: do NOT send maxPrice here. The panel can change by the time
+        # getNumber runs, which causes the API's "price exceed maxprice" error.
+        number_params = {
+            "action": "getNumber",
+            "service": service,
+            "country": country,
+            "operator": expected_operator,
+            "format": "json"
+        }
+
+        attempt = sasta_api_call(number_params)
+        if isinstance(attempt, dict) and attempt.get("status") == "OK":
+            returned_price = to_float(attempt.get("price"), None)
+            selected_panel_price = returned_price if returned_price and returned_price > 0 else expected_price
+            selected_operator = expected_operator
+            data = attempt
+            break
+
+        last_error = str(attempt.get("message", "Unknown error")) if isinstance(attempt, dict) else "Unknown error"
+
+    # If all listed operators failed, try the API's default operator with no maxPrice.
+    if data is None:
+        fallback_params = {
+            "action": "getNumber",
+            "service": service,
+            "country": country,
+            "operator": "any",
+            "format": "json"
+        }
+        fallback_data = sasta_api_call(fallback_params)
+        if isinstance(fallback_data, dict) and fallback_data.get("status") == "OK":
+            returned_price = to_float(fallback_data.get("price"), None)
+            if returned_price is not None and returned_price > 0:
+                data = fallback_data
+                selected_panel_price = returned_price
+                selected_operator = "any"
+        else:
+            last_error = str((fallback_data or {}).get("message", last_error)) if isinstance(fallback_data, dict) else last_error
+
+    if data is None:
+        bot.edit_message_text(
+            f"❌ <b>Failed to get number:</b>\n<code>{last_error}</code>\n\n"
+            "The bot tried the cheapest live option and then the other live panel prices.",
+            chat_id, call.message.message_id, parse_mode="HTML"
+        )
+        bot.answer_callback_query(call.id)
+        user_selection.pop(user_id, None)
         return
 
     activation_id = data.get("activation_id")
     order_id = data.get("order_id")
     number = data.get("number")
-    price = to_float(panel_price, None)
+    price = to_float(selected_panel_price, None)
 
     if price is None or price <= 0:
-        bot.edit_message_text("❌ <b>Invalid price returned by the API.</b>", chat_id, call.message.message_id, parse_mode="HTML")
+        bot.edit_message_text(
+            "❌ <b>Invalid price returned by the API.</b>\nPlease try again.",
+            chat_id, call.message.message_id, parse_mode="HTML"
+        )
         bot.answer_callback_query(call.id)
-        if user_id in user_selection:
-            del user_selection[user_id]
+        user_selection.pop(user_id, None)
         return
 
-    # Check user balance
+    # Check user balance before deducting.
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
     balance = row[0] if row else 0
@@ -553,15 +597,12 @@ def confirm_cancel_buy(call):
             chat_id, call.message.message_id, parse_mode="HTML"
         )
         bot.answer_callback_query(call.id)
-        if user_id in user_selection:
-            del user_selection[user_id]
+        user_selection.pop(user_id, None)
         return
 
-    # Deduct balance
     new_balance = balance - price
     cursor.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, user_id))
 
-    # Store activation
     cursor.execute(
         "INSERT INTO activations (user_id, activation_id, order_id, number, service, country, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (user_id, activation_id, order_id, number, service, country, "active")
@@ -580,8 +621,7 @@ def confirm_cancel_buy(call):
     bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="HTML")
     bot.answer_callback_query(call.id)
 
-    if user_id in user_selection:
-        del user_selection[user_id]
+    user_selection.pop(user_id, None)
 
 # ============================================
 # CHECK SMS (text input)
@@ -743,5 +783,5 @@ def back_to_menu(call):
 # ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with Smart Cheap -> Current Panel Price Fallback...")
+print("🔥 SastaOTP Bot is running with live cheapest -> panel price fallback (no stale maxPrice)...")
 bot.infinity_polling()
