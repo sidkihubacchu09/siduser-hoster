@@ -18,6 +18,8 @@ ADMIN_ID = 2119464081
 ADMIN_CHAT_ID = -1003941256566
 UPI_ID = "7722026588@ptaxis"
 
+MAX_PRICE_CAP = 75.0  # The bot will NEVER show or buy numbers more expensive than this
+
 # ============================================
 # BOT INIT
 # ============================================
@@ -94,7 +96,8 @@ def to_float(value, default=None):
 
 def get_all_prices(service, country):
     """
-    Returns a sorted list of all (price, operator) pairs available for this service/country.
+    Returns a sorted list of all (price, operator) pairs available for this service/country,
+    strictly capped at MAX_PRICE_CAP.
     """
     data = sasta_api_call({
         "action": "getPrices",
@@ -129,7 +132,7 @@ def get_all_prices(service, country):
             try:
                 p = float(cost)
                 c = int(count)
-                if p > 0 and c >= 1: 
+                if p > 0 and c >= 1 and p <= MAX_PRICE_CAP: 
                     price_list.append((p, current_op))
             except:
                 pass
@@ -142,7 +145,7 @@ def get_all_prices(service, country):
                 try:
                     p = float(k)
                     c = int(v)
-                    if p > 0 and c >= 1:
+                    if p > 0 and c >= 1 and p <= MAX_PRICE_CAP:
                         price_list.append((p, current_op))
                 except:
                     pass
@@ -444,14 +447,14 @@ def country_selected(call):
     service = user_selection[user_id]["service"]
     service_name = [name for name, code in SERVICES.items() if code == service][0]
 
-    # Checks cheapest price first
+    # Checks cheapest price first (capped at MAX_PRICE_CAP)
     panel_price, best_operator = get_panel_price_info(service, country_code)
     
     if panel_price is None:
         bot.edit_message_text(
-            "❌ <b>Out of Stock</b>\n"
-            "There are currently 0 numbers available for this country/service.\n\n"
-            "Please try a different option.",
+            f"❌ <b>Out of Stock</b>\n"
+            f"There are currently 0 numbers available under {MAX_PRICE_CAP} INR for this country/service.\n\n"
+            f"Please try a different option.",
             chat_id,
             call.message.message_id,
             parse_mode="HTML"
@@ -503,7 +506,7 @@ def confirm_cancel_buy(call):
     all_prices = get_all_prices(service, country)
     if not all_prices:
         bot.edit_message_text(
-            "❌ <b>No live numbers available.</b>\nThe panel currently has no available price for this service/country.",
+            f"❌ <b>No live numbers available.</b>\nThe panel currently has no available price under {MAX_PRICE_CAP} INR for this service/country.",
             chat_id, call.message.message_id, parse_mode="HTML"
         )
         bot.answer_callback_query(call.id)
@@ -518,6 +521,12 @@ def confirm_cancel_buy(call):
     last_error = "Unknown error"
 
     for expected_price, expected_operator in all_prices:
+        # STOP SEARCHING IF PRICE EXCEEDS CAP
+        if expected_price > MAX_PRICE_CAP:
+            if data is None:
+                last_error = f"All remaining numbers cost over {MAX_PRICE_CAP} INR. Purchase automatically aborted to protect your balance."
+            break
+
         key = (round(expected_price, 6), str(expected_operator))
         if key in tried:
             continue
@@ -543,19 +552,20 @@ def confirm_cancel_buy(call):
 
         last_error = str(attempt.get("message", "Unknown error")) if isinstance(attempt, dict) else "Unknown error"
 
-    # If all listed operators failed, try the API's default operator with no maxPrice.
-    if data is None:
+    # If all listed operators failed, try the API's default operator with a strict maxPrice limit
+    if data is None and "aborted to protect your balance" not in last_error:
         fallback_params = {
             "action": "getNumber",
             "service": service,
             "country": country,
             "operator": "any",
+            "maxPrice": str(MAX_PRICE_CAP), # Prevents the API from giving an expensive number on the fallback route
             "format": "json"
         }
         fallback_data = sasta_api_call(fallback_params)
         if isinstance(fallback_data, dict) and fallback_data.get("status") == "OK":
             returned_price = to_float(fallback_data.get("price"), None)
-            if returned_price is not None and returned_price > 0:
+            if returned_price is not None and returned_price > 0 and returned_price <= MAX_PRICE_CAP:
                 data = fallback_data
                 selected_panel_price = returned_price
                 selected_operator = "any"
@@ -565,7 +575,7 @@ def confirm_cancel_buy(call):
     if data is None:
         bot.edit_message_text(
             f"❌ <b>Failed to get number:</b>\n<code>{last_error}</code>\n\n"
-            "The bot tried the cheapest live option and then the other live panel prices.",
+            f"The bot tried all live options up to {MAX_PRICE_CAP} INR to save you money.",
             chat_id, call.message.message_id, parse_mode="HTML"
         )
         bot.answer_callback_query(call.id)
@@ -783,5 +793,5 @@ def back_to_menu(call):
 # ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with live cheapest -> panel price fallback (no stale maxPrice)...")
-bot.infinity_polling()
+print("🔥 SastaOTP Bot is running with the capped (<75 INR) fallback logic...")
+bot.infinity_polling() 
