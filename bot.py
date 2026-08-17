@@ -97,10 +97,12 @@ def get_panel_price_info(service, country):
     Strictly reads the live panel price from getPrices and returns both
     the cheapest price and its associated operator where stock is available.
     """
+    # Force JSON format return
     data = sasta_api_call({
         "action": "getPrices",
         "service": service,
-        "country": country
+        "country": country,
+        "format": "json"
     })
     
     if not isinstance(data, dict) or data.get("status") == "ERROR":
@@ -109,33 +111,39 @@ def get_panel_price_info(service, country):
     country_str = str(country)
     service_str = str(service)
 
-    # Navigate to the correct level in the JSON response
-    # Format is usually {"country": {"service": {"operator": {"cost": x, "count": y}}}}
-    target_dict = {}
+    # Drill down if the API returns full nested structure: {"country": {"service": {...}}}
     if country_str in data and isinstance(data[country_str], dict):
-        if service_str in data[country_str] and isinstance(data[country_str][service_str], dict):
-            target_dict = data[country_str][service_str]
-        else:
-            target_dict = data[country_str]
-    elif service_str in data and isinstance(data[service_str], dict):
-        target_dict = data[service_str]
-    else:
-        target_dict = data
+        data = data[country_str]
+    if service_str in data and isinstance(data[service_str], dict):
+        data = data[service_str]
 
     best_price = float('inf')
     best_operator = "any"
     found = False
 
-    for key, value in target_dict.items():
+    # Check if the remaining dictionary is directly a price object: {"cost": 43.57, "count": 100}
+    cost_val = data.get("cost", data.get("price"))
+    if cost_val is not None:
+        count_val = data.get("count", 0)
+        try:
+            p_val = float(cost_val)
+            c_val = int(count_val)
+            if c_val > 0:
+                return p_val, "any"
+        except (ValueError, TypeError):
+            pass
+
+    # Otherwise, iterate through keys assuming it's a map of operators or prices
+    for key, value in data.items():
         # Format A: "operator_name": {"cost": 43.57, "count": 100}
         if isinstance(value, dict):
-            cost = value.get("cost", value.get("price"))
-            count = value.get("count", 0)
-            if cost is not None:
+            c_val = value.get("cost", value.get("price"))
+            qty = value.get("count", 0)
+            if c_val is not None:
                 try:
-                    p_val = float(cost)
-                    c_val = int(count)
-                    if c_val > 0 and p_val < best_price:
+                    p_val = float(c_val)
+                    q_val = int(qty)
+                    if q_val > 0 and p_val < best_price:
                         best_price = p_val
                         best_operator = str(key)
                         found = True
@@ -143,11 +151,11 @@ def get_panel_price_info(service, country):
                     pass
                     
         # Format B: "43.57": 100  (key is the price, value is the stock count)
-        elif isinstance(value, (int, float, str)):
+        elif isinstance(value, (int, float, str)) and str(key).lower() not in ("cost", "price", "count"):
             try:
                 p_val = float(key)
-                c_val = int(value)
-                if c_val > 0 and p_val < best_price:
+                q_val = int(value)
+                if q_val > 0 and p_val < best_price:
                     best_price = p_val
                     best_operator = "any"
                     found = True
@@ -720,5 +728,5 @@ def back_to_menu(call):
 # ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with live panel price protection (strict parser)...")
+print("🔥 SastaOTP Bot is running with live panel price protection...")
 bot.infinity_polling()
