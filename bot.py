@@ -258,7 +258,7 @@ def service_selected(call):
     bot.answer_callback_query(call.id)
 
 # ============================================
-# COUNTRY SELECTION CALLBACK (NO PRICE FETCH – will get price from getNumber)
+# COUNTRY SELECTION CALLBACK
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("country_"))
 def country_selected(call):
@@ -303,11 +303,12 @@ def confirm_cancel_buy(call):
     service = user_selection[user_id]["service"]
     country = user_selection[user_id]["country"]
 
-    # Call getNumber – this returns the actual price
+    # ⭐ FIX: added "operator": "any" to get the cheapest number
     data = sasta_api_call({
         "action": "getNumber",
         "service": service,
         "country": country,
+        "operator": "any",      # <--- THIS IS THE FIX
         "format": "json"
     })
 
@@ -528,5 +529,5 @@ def back_to_menu(call):
 # ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with real-time price from getNumber...")
+print("🔥 SastaOTP Bot is running with real-time price from getNumber (operator=any)...")
 bot.infinity_polling()
