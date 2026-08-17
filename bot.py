@@ -3,7 +3,6 @@ import requests
 import sqlite3
 import time
 import json
-import threading
 from telebot import types
 
 # ============================================
@@ -84,87 +83,18 @@ def sasta_api_call(params):
         return {"status": "ERROR", "message": str(e)}
 
 # ============================================
-# ANIMATED MENU
+# SERVICES & COUNTRIES
 # ============================================
-# Emoji sets for each button (cycle through these)
-EMOJI_SETS = {
-    "balance": ["💰", "💎", "🪙"],
-    "wallet": ["👛", "👜", "💼"],
-    "buy": ["📲", "📱", "📞"],
-    "check": ["📩", "📨", "📧"],
-    "add": ["➕", "✨", "💳"],
+SERVICES = {
+    "Telegram": "tg",
+    "WhatsApp": "wa",
+    "Instagram": "ig",
+    "Facebook": "fb",
+    "Google": "go",
+    "Amazon": "am",
+    "Uber": "ub",
 }
 
-# Store animation threads and control flags
-animations = {}  # chat_id -> {"thread": thread, "stop": False, "message_id": msg_id}
-
-def build_menu_keyboard(emoji_idx):
-    """Build the inline keyboard with current emojis at given index."""
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    btn1 = types.InlineKeyboardButton(
-        f"{EMOJI_SETS['balance'][emoji_idx % len(EMOJI_SETS['balance'])]} Balance",
-        callback_data="menu_balance"
-    )
-    btn2 = types.InlineKeyboardButton(
-        f"{EMOJI_SETS['wallet'][emoji_idx % len(EMOJI_SETS['wallet'])]} Wallet",
-        callback_data="menu_wallet"
-    )
-    btn3 = types.InlineKeyboardButton(
-        f"{EMOJI_SETS['buy'][emoji_idx % len(EMOJI_SETS['buy'])]} Buy Number",
-        callback_data="menu_buy"
-    )
-    btn4 = types.InlineKeyboardButton(
-        f"{EMOJI_SETS['check'][emoji_idx % len(EMOJI_SETS['check'])]} Check SMS",
-        callback_data="menu_check"
-    )
-    btn5 = types.InlineKeyboardButton(
-        f"{EMOJI_SETS['add'][emoji_idx % len(EMOJI_SETS['add'])]} Add Funds",
-        callback_data="menu_add"
-    )
-    markup.add(btn1, btn2, btn3, btn4, btn5)
-    return markup
-
-def animate_menu(chat_id, message_id):
-    """Background thread: updates the menu message every 2 seconds."""
-    idx = 0
-    while animations.get(chat_id, {}).get("stop", False) is False:
-        try:
-            new_markup = build_menu_keyboard(idx)
-            bot.edit_message_reply_markup(chat_id, message_id, reply_markup=new_markup)
-            idx += 1
-            time.sleep(2)
-        except Exception:
-            # Message might be deleted or bot can't edit; stop animation
-            break
-    # Clean up when loop ends
-    if chat_id in animations:
-        animations[chat_id]["stop"] = True
-        animations[chat_id]["thread"] = None
-
-def start_animation(chat_id, message_id):
-    """Start the animation for a given menu message."""
-    # Stop any previous animation for this chat
-    if chat_id in animations:
-        animations[chat_id]["stop"] = True
-        if animations[chat_id]["thread"] and animations[chat_id]["thread"].is_alive():
-            animations[chat_id]["thread"].join(timeout=1)
-    # Start new thread
-    animations[chat_id] = {
-        "stop": False,
-        "message_id": message_id,
-        "thread": threading.Thread(target=animate_menu, args=(chat_id, message_id), daemon=True)
-    }
-    animations[chat_id]["thread"].start()
-
-def stop_animation(chat_id):
-    """Stop the animation for a chat."""
-    if chat_id in animations:
-        animations[chat_id]["stop"] = True
-        # Let the thread exit naturally
-
-# ============================================
-# COUNTRIES FOR NUMBER PURCHASE
-# ============================================
 COUNTRIES = {
     "🇮🇳 India": "91",
     "🇺🇸 USA": "1",
@@ -178,13 +108,18 @@ COUNTRIES = {
     "🇧🇷 Brazil": "55",
 }
 
-def show_country_selection(chat_id, user_id):
-    """Show an inline keyboard with country options."""
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    for name, code in COUNTRIES.items():
-        markup.add(types.InlineKeyboardButton(name, callback_data=f"country_{code}"))
-    markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back"))
-    bot.send_message(chat_id, "🌍 <b>Select your country:</b>", reply_markup=markup, parse_mode="HTML")
+# Temporary storage for user selections
+user_selection = {}  # user_id -> {"service": code, "country": code, "price": float}
+
+# ============================================
+# REPLY KEYBOARD (MAIN MENU)
+# ============================================
+def get_main_keyboard():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("💰 Balance", "👛 Wallet")
+    markup.row("📲 Buy Number", "📩 Check SMS")
+    markup.row("➕ Add Funds")
+    return markup
 
 # ============================================
 # START
@@ -199,7 +134,6 @@ def start(message):
         cursor.execute("INSERT INTO users (user_id, balance) VALUES (?, ?)", (user_id, 0))
         conn.commit()
 
-    # Send welcome animation (optional)
     try:
         bot.send_animation(
             chat_id,
@@ -213,16 +147,14 @@ def start(message):
     except:
         pass
 
-    # Send the animated menu
-    msg = bot.send_message(
+    bot.send_message(
         chat_id,
         "◈ <b>ADVANCED OTP BOT</b> ◈\n"
         "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
-        "✨ Choose an option below:",
-        reply_markup=build_menu_keyboard(0),
+        "✨ Choose an option from the menu below.",
+        reply_markup=get_main_keyboard(),
         parse_mode="HTML"
     )
-    start_animation(chat_id, msg.message_id)
 
 # ============================================
 # ID COMMAND
@@ -236,99 +168,94 @@ def get_ids(message):
     bot.reply_to(message, text, parse_mode="HTML")
 
 # ============================================
-# MENU CALLBACKS
+# WALLET (Local balance)
 # ============================================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("menu_"))
-def menu_callback(call):
-    chat_id = call.message.chat.id
-    user_id = call.from_user.id
-    data = call.data
-
-    # Stop animation for this chat
-    stop_animation(chat_id)
-
-    if data == "menu_balance":
-        # Show API balance
-        api_balance_callback(call)
-    elif data == "menu_wallet":
-        wallet_callback(call)
-    elif data == "menu_buy":
-        buy_number_callback(call)
-    elif data == "menu_check":
-        check_sms_callback(call)
-    elif data == "menu_add":
-        add_funds_callback(call)
-    elif data == "menu_back":
-        # Return to main menu (send new menu and restart animation)
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(
-            chat_id,
-            "◈ <b>ADVANCED OTP BOT</b> ◈\n"
-            "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
-            "✨ Choose an option below:",
-            reply_markup=build_menu_keyboard(0),
-            parse_mode="HTML"
-        )
-        start_animation(chat_id, msg.message_id)
-
-    bot.answer_callback_query(call.id)
-
-def api_balance_callback(call):
-    chat_id = call.message.chat.id
-    data = sasta_api_call({"action": "getBalance"})
-    if data.get("status") == "OK":
-        bal = data.get("balance") or data.get("ACCESS_BALANCE") or 0.0
-        currency = data.get("currency", "INR")
-        bot.send_message(
-            chat_id,
-            f"<b>🌐 SastaOTP Balance</b>\n✦ ── ── ── ── ✦\n<code>{bal}</code> {currency}",
-            parse_mode="HTML"
-        )
-    else:
-        bot.send_message(chat_id, f"❌ <b>Error:</b> {data.get('message', 'Unknown')}", parse_mode="HTML")
-
-def wallet_callback(call):
-    chat_id = call.message.chat.id
-    user_id = call.from_user.id
+@bot.message_handler(func=lambda m: m.text == "👛 Wallet")
+def wallet(message):
+    user_id = message.from_user.id
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
     balance = row[0] if row else 0
-    bot.send_message(
-        chat_id,
+    bot.reply_to(
+        message,
         f"<b>💰 Wallet Balance</b>\n✦ ── ── ── ── ✦\n<code>{balance:.2f}</code> INR",
         parse_mode="HTML"
     )
 
-def buy_number_callback(call):
-    chat_id = call.message.chat.id
-    user_id = call.from_user.id
+# ============================================
+# API BALANCE (SastaOTP)
+# ============================================
+@bot.message_handler(func=lambda m: m.text == "💰 Balance")
+def api_balance(message):
+    data = sasta_api_call({"action": "getBalance"})
+    if data.get("status") == "OK":
+        bal = data.get("balance") or data.get("ACCESS_BALANCE") or 0.0
+        currency = data.get("currency", "INR")
+        bot.reply_to(
+            message,
+            f"<b>🌐 SastaOTP Balance</b>\n✦ ── ── ── ── ✦\n<code>{bal}</code> {currency}",
+            parse_mode="HTML"
+        )
+    else:
+        bot.reply_to(message, f"❌ <b>Error:</b> {data.get('message', 'Unknown')}", parse_mode="HTML")
 
-    # Check local balance first
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    balance = row[0] if row else 0
-
-    if balance < 1:
-        bot.send_message(chat_id, "❌ <b>Insufficient wallet balance.</b>\nPlease add funds via ➕ Add Funds.", parse_mode="HTML")
-        return
-
-    # Show country selection
-    show_country_selection(chat_id, user_id)
-
-def check_sms_callback(call):
-    chat_id = call.message.chat.id
-    msg = bot.send_message(chat_id, "📨 <b>Send your Activation ID</b> (or Order ID) to retrieve SMS.", parse_mode="HTML")
-    bot.register_next_step_handler(msg, fetch_sms)
-
-def add_funds_callback(call):
-    chat_id = call.message.chat.id
+# ============================================
+# ADD FUNDS (UPI)
+# ============================================
+@bot.message_handler(func=lambda m: m.text == "➕ Add Funds")
+def add_funds(message):
     text = (
         f"💳 <b>Send Payment via UPI</b>\n✦ ── ── ── ── ✦\n"
         f"🏦 <b>UPI ID:</b> <code>{UPI_ID}</code>\n\n"
         f"📸 After payment, send a <b>screenshot</b> of the transaction.\n"
         f"✅ Admin will approve and add funds to your wallet."
     )
-    bot.send_message(chat_id, text, parse_mode="HTML")
+    bot.send_message(message.chat.id, text, parse_mode="HTML")
+
+# ============================================
+# BUY NUMBER FLOW
+# ============================================
+@bot.message_handler(func=lambda m: m.text == "📲 Buy Number")
+def buy_number(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    balance = row[0] if row else 0
+
+    if balance < 1:
+        bot.reply_to(message, "❌ <b>Insufficient wallet balance.</b>\nPlease add funds via ➕ Add Funds.", parse_mode="HTML")
+        return
+
+    # Show service selection
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    for name, code in SERVICES.items():
+        markup.add(types.InlineKeyboardButton(name, callback_data=f"service_{code}"))
+    markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back"))
+    bot.send_message(chat_id, "📱 <b>Select the service:</b>", reply_markup=markup, parse_mode="HTML")
+
+# ============================================
+# SERVICE SELECTION CALLBACK
+# ============================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("service_"))
+def service_selected(call):
+    chat_id = call.message.chat.id
+    user_id = call.from_user.id
+    service_code = call.data.split("_")[1]
+
+    # Store selected service
+    if user_id not in user_selection:
+        user_selection[user_id] = {}
+    user_selection[user_id]["service"] = service_code
+
+    # Show country selection
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    for name, code in COUNTRIES.items():
+        markup.add(types.InlineKeyboardButton(name, callback_data=f"country_{code}"))
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="service_back"))
+    bot.edit_message_text("🌍 <b>Select your country:</b>", chat_id, call.message.message_id, reply_markup=markup, parse_mode="HTML")
+    bot.answer_callback_query(call.id)
 
 # ============================================
 # COUNTRY SELECTION CALLBACK
@@ -339,30 +266,79 @@ def country_selected(call):
     user_id = call.from_user.id
     country_code = call.data.split("_")[1]
 
-    # Stop animation if any
-    stop_animation(chat_id)
+    # Store selected country
+    user_selection[user_id]["country"] = country_code
 
-    # Proceed to buy number with selected country
-    process_buy_number(chat_id, user_id, country_code)
-    bot.answer_callback_query(call.id)
-
-def process_buy_number(chat_id, user_id, country_code):
-    """Call SastaOTP getNumber with selected country."""
-    service = "tg"  # hardcoded as before
-
-    data = sasta_api_call({
-        "action": "getNumber",
+    # Fetch price for this service + country
+    service = user_selection[user_id]["service"]
+    price_data = sasta_api_call({
+        "action": "getPrices",
         "service": service,
         "country": country_code,
         "format": "json"
     })
 
+    # Parse price (response may be nested)
+    price = None
+    if price_data.get("status") == "OK":
+        # The price might be in price_data["prices"][country_code][service] or similar
+        # For simplicity, we try to get from response
+        price = price_data.get("price")
+        if price is None and "prices" in price_data:
+            try:
+                price = price_data["prices"][country_code][service]
+            except:
+                pass
+    if price is None:
+        # Fallback: call getNumber to get price (but that would activate number)
+        # So we show a generic message and ask user to confirm without price.
+        price = "Unknown"
+        confirm_text = f"⚠️ Could not fetch price. Continue anyway?"
+    else:
+        confirm_text = f"💰 <b>Price:</b> <code>{price}</code> INR\nConfirm purchase?"
+
+    user_selection[user_id]["price"] = price
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy"))
+    markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy"))
+    bot.edit_message_text(
+        f"📞 <b>Service:</b> {service}\n🌍 <b>Country:</b> {country_code}\n{confirm_text}",
+        chat_id, call.message.message_id, reply_markup=markup, parse_mode="HTML"
+    )
+    bot.answer_callback_query(call.id)
+
+# ============================================
+# CONFIRM / CANCEL BUY
+# ============================================
+@bot.callback_query_handler(func=lambda call: call.data in ["confirm_buy", "cancel_buy"])
+def confirm_cancel_buy(call):
+    chat_id = call.message.chat.id
+    user_id = call.from_user.id
+
+    if call.data == "cancel_buy":
+        bot.edit_message_text("❌ Purchase cancelled.", chat_id, call.message.message_id)
+        bot.answer_callback_query(call.id)
+        return
+
+    # Confirm purchase
+    service = user_selection[user_id]["service"]
+    country = user_selection[user_id]["country"]
+
+    # Call getNumber
+    data = sasta_api_call({
+        "action": "getNumber",
+        "service": service,
+        "country": country,
+        "format": "json"
+    })
+
     if data.get("status") != "OK":
-        bot.send_message(
-            chat_id,
+        bot.edit_message_text(
             f"❌ <b>Failed to get number:</b>\n<code>{data.get('message', 'Unknown error')}</code>",
-            parse_mode="HTML"
+            chat_id, call.message.message_id, parse_mode="HTML"
         )
+        bot.answer_callback_query(call.id)
         return
 
     activation_id = data.get("activation_id")
@@ -370,7 +346,7 @@ def process_buy_number(chat_id, user_id, country_code):
     number = data.get("number")
     price = float(data.get("price", 0.0))
 
-    # Deduct from user's wallet
+    # Deduct balance
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
     balance = row[0] if row else 0
@@ -380,7 +356,7 @@ def process_buy_number(chat_id, user_id, country_code):
     # Store activation
     cursor.execute(
         "INSERT INTO activations (user_id, activation_id, order_id, number, service, country, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (user_id, activation_id, order_id, number, service, country_code, "active")
+        (user_id, activation_id, order_id, number, service, country, "active")
     )
     conn.commit()
 
@@ -393,11 +369,21 @@ def process_buy_number(chat_id, user_id, country_code):
         f"💳 <b>New Balance:</b> <code>{new_balance:.2f}</code> INR\n\n"
         f"📩 Use <b>Check SMS</b> and send the Activation ID to get your OTP."
     )
-    bot.send_message(chat_id, text, parse_mode="HTML")
+    bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="HTML")
+    bot.answer_callback_query(call.id)
+
+    # Clean up temp data
+    if user_id in user_selection:
+        del user_selection[user_id]
 
 # ============================================
 # CHECK SMS (text input)
 # ============================================
+@bot.message_handler(func=lambda m: m.text == "📩 Check SMS")
+def check_sms(message):
+    msg = bot.reply_to(message, "📨 <b>Send your Activation ID</b> (or Order ID) to retrieve SMS.", parse_mode="HTML")
+    bot.register_next_step_handler(msg, fetch_sms)
+
 def fetch_sms(message):
     user_input = message.text.strip()
     user_id = message.from_user.id
@@ -539,7 +525,17 @@ def send_broadcast(message):
     bot.reply_to(message, f"✅ <b>Broadcast sent to</b> <code>{success}</code> users.", parse_mode="HTML")
 
 # ============================================
+# BACK TO MENU (inline callback)
+# ============================================
+@bot.callback_query_handler(func=lambda call: call.data == "menu_back" or call.data == "service_back")
+def back_to_menu(call):
+    chat_id = call.message.chat.id
+    bot.edit_message_text("↩️ Returned to menu.", chat_id, call.message.message_id)
+    bot.answer_callback_query(call.id)
+    # Send main menu again (or user can press start)
+
+# ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with animated menu and country selection...")
+print("🔥 SastaOTP Bot is running with reply keyboard and service selection...")
 bot.infinity_polling()
