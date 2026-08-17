@@ -8,7 +8,7 @@ from telebot import types
 # ============================================
 # CONFIG
 # ============================================
-BOT_TOKEN = "8732063177:AAFjqxNLHh0moa_8daUbThK3zVoi_B6wXSU"
+BOT_TOKEN = "8240132325:AAG090O_B-wI33-Hd5WCMvuwiUnOYOuWeYQ"
 
 # SastaOTP API key
 SASTA_API_KEY = "stp_0ac4e9ace00367b27b27afe499242f59e73c405035866819"
@@ -16,7 +16,7 @@ SASTA_BASE_URL = "https://sastasms.pro/stubs/handler_api.php"
 
 ADMIN_ID = 6517403970
 ADMIN_CHAT_ID = -1003941256566
-UPI_ID = "7722026588@ptaxis"
+UPI_ID = "urx.aditya@fam"
 
 # ============================================
 # BOT INIT
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS activations (
 conn.commit()
 
 # ============================================
-# HELPER: SastaOTP API CALL
+# HELPER: SastaOTP API CALL (FIXED)
 # ============================================
 def sasta_api_call(params):
     """Make a GET request to SastaOTP API with api_key automatically added."""
@@ -74,7 +74,17 @@ def sasta_api_call(params):
     try:
         resp = requests.get(SASTA_BASE_URL, params=params, timeout=15)
         if resp.status_code == 200:
-            return resp.json()
+            # Try JSON first
+            try:
+                return resp.json()
+            except:
+                # Handle plain text responses like "ACCESS_BALANCE:125.50"
+                text = resp.text.strip()
+                if ':' in text:
+                    parts = text.split(':', 1)
+                    return {"status": "OK", parts[0]: parts[1]}
+                else:
+                    return {"status": "ERROR", "message": text}
         else:
             return {"status": "ERROR", "message": f"HTTP {resp.status_code}"}
     except Exception as e:
@@ -149,19 +159,25 @@ def wallet(message):
     )
 
 # ============================================
-# API BALANCE (SastaOTP)
+# API BALANCE (SastaOTP) - FIXED
 # ============================================
 @bot.message_handler(func=lambda m: m.text == "💰 Balance")
 def api_balance(message):
     data = sasta_api_call({"action": "getBalance"})
     if data.get("status") == "OK":
-        bal = data.get("balance", 0.0)
+        # Balance might be in 'balance' key or the plain text part
+        bal = data.get("balance")
+        if bal is None:
+            # If it came from plain text, it might be under the action name
+            bal = data.get("ACCESS_BALANCE")
+        if bal is None:
+            bal = 0.0
         currency = data.get("currency", "INR")
         bot.reply_to(
             message,
             f"<b>🌐 SastaOTP Balance</b>\n"
             f"✦ ── ── ── ── ✦\n"
-            f"<code>{bal:.2f}</code> {currency}",
+            f"<code>{bal}</code> {currency}",
             parse_mode="HTML"
         )
     else:
@@ -182,7 +198,7 @@ def add_funds(message):
     bot.send_message(message.chat.id, text, parse_mode="HTML")
 
 # ============================================
-# PAYMENT SCREENSHOT HANDLER
+# PAYMENT SCREENSHOT HANDLER - FIXED
 # ============================================
 @bot.message_handler(content_types=['photo'])
 def payment_photo(message):
@@ -210,9 +226,15 @@ def payment_photo(message):
     )
 
     try:
+        # Try sending to admin group first
         bot.send_photo(ADMIN_CHAT_ID, file_id, caption=caption, reply_markup=markup, parse_mode="HTML")
-    except:
-        bot.send_photo(ADMIN_ID, file_id, caption=caption, reply_markup=markup, parse_mode="HTML")
+    except Exception as e:
+        # If group fails, send directly to admin's private chat
+        try:
+            bot.send_photo(ADMIN_ID, file_id, caption=caption, reply_markup=markup, parse_mode="HTML")
+        except Exception as e2:
+            bot.reply_to(message, f"⚠️ Could not notify admin. Error: {e2}")
+            return
 
     bot.reply_to(message, "✅ <b>Payment submitted!</b>\n⏳ Waiting for admin approval.", parse_mode="HTML")
 
@@ -265,7 +287,6 @@ def buy_number(message):
         return
 
     # For simplicity, we hardcode service='tg' and country='91' (India)
-    # In a more advanced version, you can let the user choose from a list.
     service = "tg"
     country = "91"
 
@@ -343,12 +364,8 @@ def fetch_sms(message):
         "id": activation_id
     })
 
-    # SastaOTP returns status like "STATUS_OK" or "STATUS_WAIT_CODE" etc.
-    # The OTP code is usually in the response if received.
-    # Let's parse the response.
     status = data.get("status")
     if status == "STATUS_OK" or status == "OK":
-        # Sometimes code is in 'code' or 'sms' field
         code = data.get("code") or data.get("sms") or data.get("message")
         if code:
             bot.reply_to(
