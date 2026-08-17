@@ -258,7 +258,7 @@ def service_selected(call):
     bot.answer_callback_query(call.id)
 
 # ============================================
-# COUNTRY SELECTION CALLBACK
+# COUNTRY SELECTION CALLBACK (FIXED PRICE)
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("country_"))
 def country_selected(call):
@@ -269,8 +269,9 @@ def country_selected(call):
     # Store selected country
     user_selection[user_id]["country"] = country_code
 
-    # Fetch price for this service + country
     service = user_selection[user_id]["service"]
+
+    # Fetch price from SastaOTP
     price_data = sasta_api_call({
         "action": "getPrices",
         "service": service,
@@ -278,38 +279,40 @@ def country_selected(call):
         "format": "json"
     })
 
-    # Parse price (response may be nested)
     price = None
     if price_data.get("status") == "OK":
-        # The price might be in price_data["prices"][country_code][service] or similar
-        # For simplicity, we try to get from response
-        price = price_data.get("price")
-        if price is None and "prices" in price_data:
-            try:
-                price = price_data["prices"][country_code][service]
-            except:
-                pass
+        # Try to extract price from nested structure: prices[country][service]
+        try:
+            price = price_data["prices"][country_code][service]
+        except (KeyError, TypeError):
+            # Fallback: try direct 'price' field
+            price = price_data.get("price")
+    # If price is still None, set to 0.0 to avoid errors, but we'll show "Unknown"
     if price is None:
-        # Fallback: call getNumber to get price (but that would activate number)
-        # So we show a generic message and ask user to confirm without price.
-        price = "Unknown"
-        confirm_text = f"⚠️ Could not fetch price. Continue anyway?"
+        price = 0.0
+        confirm_text = "⚠️ Could not fetch price. Continue anyway?"
     else:
-        confirm_text = f"💰 <b>Price:</b> <code>{price}</code> INR\nConfirm purchase?"
+        price = float(price)
+        confirm_text = f"💰 <b>Price:</b> <code>{price:.2f}</code> INR\nConfirm purchase?"
 
+    # Store the exact price for later deduction
     user_selection[user_id]["price"] = price
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy"))
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy"))
+
+    # Show service name (get from SERVICES dict by code)
+    service_name = [name for name, code in SERVICES.items() if code == service][0] if service in [code for code in SERVICES.values()] else service
+
     bot.edit_message_text(
-        f"📞 <b>Service:</b> {service}\n🌍 <b>Country:</b> {country_code}\n{confirm_text}",
+        f"📞 <b>Service:</b> {service_name}\n🌍 <b>Country:</b> {country_code}\n{confirm_text}",
         chat_id, call.message.message_id, reply_markup=markup, parse_mode="HTML"
     )
     bot.answer_callback_query(call.id)
 
 # ============================================
-# CONFIRM / CANCEL BUY
+# CONFIRM / CANCEL BUY (FIXED DEDUCTION)
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data in ["confirm_buy", "cancel_buy"])
 def confirm_cancel_buy(call):
@@ -319,11 +322,15 @@ def confirm_cancel_buy(call):
     if call.data == "cancel_buy":
         bot.edit_message_text("❌ Purchase cancelled.", chat_id, call.message.message_id)
         bot.answer_callback_query(call.id)
+        # Clean up temp data
+        if user_id in user_selection:
+            del user_selection[user_id]
         return
 
     # Confirm purchase
     service = user_selection[user_id]["service"]
     country = user_selection[user_id]["country"]
+    price = user_selection[user_id].get("price", 0.0)
 
     # Call getNumber
     data = sasta_api_call({
@@ -339,12 +346,17 @@ def confirm_cancel_buy(call):
             chat_id, call.message.message_id, parse_mode="HTML"
         )
         bot.answer_callback_query(call.id)
+        # Clean up
+        if user_id in user_selection:
+            del user_selection[user_id]
         return
 
     activation_id = data.get("activation_id")
     order_id = data.get("order_id")
     number = data.get("number")
-    price = float(data.get("price", 0.0))
+    # Use the stored price for deduction (if price is 0.0, fallback to what getNumber returns)
+    if price <= 0.0:
+        price = float(data.get("price", 0.0))
 
     # Deduct balance
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
