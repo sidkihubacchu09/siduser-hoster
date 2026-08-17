@@ -94,108 +94,77 @@ def to_float(value, default=None):
 
 def get_panel_price_info(service, country):
     """
-    Read the live panel price from getPrices.
-
-    Supports the common compatible-API response formats:
-      {"91":{"tg":{"cost":"34","count":10}}}
-      {"91":{"tg":{"price":"34","count":10}}}
-      {"91":{"tg":{"34":10,"35":20}}}
-      {"tg":{"cost":"34","count":10}}
+    Read the live panel price from getPrices and returns both
+    the cheapest price and its associated operator.
     """
     data = sasta_api_call({
         "action": "getPrices",
-        "country": str(country),
         "service": service,
-        "format": "json"
+        "country": country
     })
+    
+    if not isinstance(data, dict) or data.get("status") == "ERROR":
+        return None, "any"
 
-    if not isinstance(data, dict):
-        return None
+    best_price = float('inf')
+    best_operator = "any"
+    found = False
 
-    # API error response
-    if str(data.get("status", "")).upper() == "ERROR":
-        return None
-
-    target_service = str(service)
-    target_country = str(country)
-
-    # First, locate the selected country's block.
-    country_blocks = []
-    for key, value in data.items():
-        if str(key) == target_country and isinstance(value, dict):
-            country_blocks.append(value)
-
-    # Some providers return the service block directly.
-    if isinstance(data.get(target_service), dict):
-        country_blocks.append({target_service: data[target_service]})
-
-    # Some providers return only the selected service block after filters.
-    if isinstance(data.get("cost"), (str, int, float)) or isinstance(data.get("price"), (str, int, float)):
-        country_blocks.append({target_service: data})
-
-    prices = []
-
-    def add_price(value, count=1):
-        price = to_float(value)
-        qty = to_float(count, 1)
-        if price is not None and price > 0 and qty > 0:
-            prices.append(price)
-
-    def scan_service_block(block):
-        if not isinstance(block, dict):
+    # Recursive search to hunt down the cheapest price inside the complex JSON dictionary
+    def search_dict(d, parent_key="any"):
+        nonlocal best_price, best_operator, found
+        if not isinstance(d, dict):
             return
 
-        # Direct form: {"cost": "34", "count": 100}
-        for key in ("cost", "price", "amount"):
-            if key in block:
-                add_price(block.get(key), block.get("count", 1))
-                break
+        # Case 1: The dictionary itself has cost/count keys
+        cost = d.get("cost", d.get("price"))
+        if cost is not None:
+            count = d.get("count", 1)
+            try:
+                p_val = float(cost)
+                c_val = float(count)
+                if c_val > 0 and p_val < best_price:
+                    best_price = p_val
+                    best_operator = parent_key
+                    found = True
+            except (ValueError, TypeError):
+                pass
 
-        # Price -> count form: {"34": 100, "35": 20}
-        for key, value in block.items():
-            if isinstance(value, (int, float, str)):
+        # Case 2: Deep dive into operators and price-quantity formats
+        for k, v in d.items():
+            if isinstance(v, (int, float, str)) and k not in ("cost", "price", "count"):
                 try:
-                    price_key = float(key)
-                    qty = float(value)
-                    if price_key > 0 and qty > 0:
-                        prices.append(price_key)
-                except (TypeError, ValueError):
+                    p_val = float(k)
+                    c_val = float(v)
+                    if c_val > 0 and p_val < best_price:
+                        best_price = p_val
+                        best_operator = parent_key
+                        found = True
+                except (ValueError, TypeError):
                     pass
+            elif isinstance(v, dict):
+                search_dict(v, str(k))
 
-        # Operator form: {"op1":{"cost":"34","count":100}}
-        for value in block.values():
-            if isinstance(value, dict):
-                for key in ("cost", "price", "amount"):
-                    if key in value:
-                        add_price(value.get(key), value.get("count", 1))
-                        break
-
-    for country_block in country_blocks:
-        service_block = country_block.get(target_service) if isinstance(country_block, dict) else None
-        if isinstance(service_block, dict):
-            scan_service_block(service_block)
-        elif isinstance(country_block, dict):
-            scan_service_block(country_block)
-
-    # Last-resort recursive scan: find the selected service anywhere in the JSON.
-    if not prices:
-        def recursive_find(obj):
-            if isinstance(obj, dict):
-                for key, value in obj.items():
-                    if str(key) == target_service and isinstance(value, dict):
-                        scan_service_block(value)
-                    recursive_find(value)
-            elif isinstance(obj, list):
-                for item in obj:
-                    recursive_find(item)
-
-        recursive_find(data)
-
-    if not prices:
-        return None
-
-    # The panel displays the cheapest available price for this service/country.
-    return min(prices)
+    country_str = str(country)
+    service_str = str(service)
+    
+    # Isolate only the selected country and service to search
+    target_data = data
+    if country_str in data and isinstance(data[country_str], dict):
+        if service_str in data[country_str] and isinstance(data[country_str][service_str], dict):
+            target_data = data[country_str][service_str]
+        else:
+            target_data = data[country_str]
+            
+    search_dict(target_data)
+    
+    if found:
+        # Fallback if parent_key falsely matched a root level key name
+        if best_operator in (country_str, service_str, "cost", "price", "count"):
+            best_operator = "any"
+        return best_price, best_operator
+        
+    return None, "any"
 
 def build_service_keyboard(animation_frame=0):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -508,6 +477,7 @@ def confirm_cancel_buy(call):
     service = user_selection[user_id]["service"]
     country = user_selection[user_id]["country"]
     panel_price = user_selection[user_id].get("panel_price")
+    operator = user_selection[user_id].get("operator", "any")
 
     # Request a number at or below the exact live panel price.
     # Do not use the getNumber response price for charging because many
@@ -516,7 +486,7 @@ def confirm_cancel_buy(call):
         "action": "getNumber",
         "service": service,
         "country": country,
-        "operator": "any",
+        "operator": operator, # Now uses the correct cheapest operator instead of "any"
         "format": "json"
     }
 
