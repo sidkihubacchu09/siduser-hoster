@@ -1,1705 +1,409 @@
-#!/usr/bin/env python3
-"""
-SUPER DUPER TELEGRAM BOT HOSTER - ULTIMATE AQUATIC EDITION
-- Runs a Master Control Bot (userbot or bot)
-- Manages multiple hosted bots (start/stop/restart)
-- Manages userbots (via OTP login + Pyrogram sessions)
-- Manages arbitrary Python/JS scripts (upload, run, stop, logs)
-- Inline buttons, animations, aquatic theme
-- Async performance with Pyrogram
-- Real-time database storage (aiosqlite)
-- Health check & auto-restart system
-- Subscription, admin, broadcast system
-- Web dashboard REMOVED – Telegram bot only
-"""
-
-import asyncio
-import random
-import sys
+import telebot
+import requests
+import sqlite3
 import time
-import os
-import shutil
-import subprocess
-import threading
-import re
-import zipfile
-import tempfile
-from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Tuple, Set
-import traceback
+import json
+from telebot import types
 
-# Pyrogram imports
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
-from pyrogram.enums import ParseMode
-from pyrogram.errors import FloodWait, SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
+# ============================================
+# CONFIG
+# ============================================
+BOT_TOKEN = "8732063177:AAFjqxNLHh0moa_8daUbThK3zVoi_B6wXSU"
 
-# Database import
-import aiosqlite
+# SastaOTP API key
+SASTA_API_KEY = "stp_0ac4e9ace00367b27b27afe499242f59e73c405035866819"
+SASTA_BASE_URL = "https://sastasms.pro/stubs/handler_api.php"
 
-# Additional
-import psutil
+ADMIN_ID = 6517403970
+ADMIN_CHAT_ID = -1003941256566
+UPI_ID = "7722026588@ptaxis"
 
-# --------------------------
-# CONFIGURATION
-# --------------------------
-MASTER_API_ID = 33491590
-MASTER_API_HASH = "35eb3cd440c7ad282cfdc2ce557e37f6"
-MASTER_BOT_TOKEN = "8791579380:AAF_w5eoha_UirctSTcvp_I8m6FQGrfaYeo"   # unchanged
-MASTER_SESSION_STRING = None  # set if using userbot as master
+# ============================================
+# BOT INIT
+# ============================================
+bot = telebot.TeleBot(BOT_TOKEN)
 
-OWNER_ID = 2119464081
-SUPPORT_USERNAME = "@fxrsale"
-MAX_USERBOTS_PER_USER = 3
-MAX_SCRIPTS_PER_USER = 10
+# ============================================
+# DATABASE
+# ============================================
+conn = sqlite3.connect("database.db", check_same_thread=False)
+cursor = conn.cursor()
 
-HOSTED_BOTS = []
+# Users table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    balance REAL DEFAULT 0
+)
+''')
 
-# --------------------------
-# ANIMATIONS (EXPANDED)
-# --------------------------
-ANIMATIONS = [
-    "https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif",
-    "https://media.giphy.com/media/l0HlNaQ6gWfllcjDO/giphy.gif",
-    "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif",
-    "https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif",
-    "https://media.giphy.com/media/3o7aD2saalBwwftFIY/giphy.gif",
-    "https://media.giphy.com/media/3o7aCTPPm4OHfRLSH6/giphy.gif",
-    "https://media.giphy.com/media/l4FGuhL4U2WyjdkaY/giphy.gif",
-    "https://media.giphy.com/media/3o7aD5jJzJzJZq5wM0/giphy.gif",
-    "https://media.giphy.com/media/3o6Zt8HWq4g9fW8t4k/giphy.gif",
-    "https://media.giphy.com/media/xT0xeMA62E1XIlupj2/giphy.gif",
-]
+# Payments table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS payments (
+    payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount REAL,
+    status TEXT,
+    screenshot TEXT
+)
+''')
 
-EXTRA_ANIMATIONS = [
-    "https://media.giphy.com/media/3o7aCTfyhYawdOXcFW/giphy.gif",
-    "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
-    "https://media.giphy.com/media/3o7aD2sG6Wf2rB3K3C/giphy.gif",
-    "https://media.giphy.com/media/3o7aCT8bDhf2iW0m2A/giphy.gif",
-    "https://media.giphy.com/media/3o7aTzG6i5tXlV6C7K/giphy.gif",
-]
+# Activations table (stores purchased numbers)
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS activations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    activation_id TEXT,
+    order_id INTEGER,
+    number TEXT,
+    service TEXT,
+    country TEXT,
+    status TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+''')
 
-NEW_ANIMATIONS = [
-    "https://media.giphy.com/media/3o6gb8e3wHnqCgG7Bm/giphy.gif",
-    "https://media.giphy.com/media/3o6Zt8mJ8l3bXQG7eM/giphy.gif",
-    "https://media.giphy.com/media/3o7TKqfH9pZ0VnPqY4/giphy.gif",
-    "https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif",
-    "https://media.giphy.com/media/3o6gDUGtYPTQl8F4Gk/giphy.gif",
-]
+conn.commit()
 
-ANIMATIONS.extend(NEW_ANIMATIONS)
-
-DB_PATH = "bot_hoster.db"
-HEALTH_CHECK_INTERVAL = 30
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_BOTS_DIR = os.path.join(BASE_DIR, "upload_bots")
-os.makedirs(UPLOAD_BOTS_DIR, exist_ok=True)
-
-# --------------------------
-# DATABASE SETUP (extended)
-# --------------------------
-async def init_db():
-    """Create tables if they don't exist."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS bots (
-                name TEXT PRIMARY KEY,
-                token TEXT NOT NULL,
-                status TEXT DEFAULT 'stopped'
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS crash_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                bot_name TEXT,
-                timestamp TEXT,
-                event TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS userbots (
-                name TEXT PRIMARY KEY,
-                session_string TEXT NOT NULL,
-                status TEXT DEFAULT 'stopped',
-                user_id INTEGER
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                first_name TEXT,
-                joined_at TEXT,
-                is_premium INTEGER DEFAULT 0,
-                expiry TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS admins (
-                user_id INTEGER PRIMARY KEY
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS user_files (
-                user_id INTEGER,
-                file_name TEXT,
-                file_type TEXT,
-                PRIMARY KEY (user_id, file_name)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                user_id INTEGER PRIMARY KEY,
-                expiry TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS blocked (
-                user_id INTEGER PRIMARY KEY
-            )
-        """)
-        await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (OWNER_ID,))
-        await db.commit()
-
-# --------------------------
-# DATABASE FUNCTIONS (extended)
-# --------------------------
-# Bots
-async def db_add_bot(name, token):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO bots (name, token, status) VALUES (?, ?, ?)", (name, token, "stopped"))
-        await db.commit()
-
-async def db_remove_bot(name):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM bots WHERE name = ?", (name,))
-        await db.commit()
-
-async def db_update_bot_status(name, status):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE bots SET status = ? WHERE name = ?", (status, name))
-        await db.commit()
-
-async def db_get_all_bots():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT name, token, status FROM bots")
-        rows = await cursor.fetchall()
-        return rows
-
-async def db_log_crash(bot_name, event):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT INTO crash_log (bot_name, timestamp, event) VALUES (?, ?, ?)", (bot_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), event))
-        await db.commit()
-
-async def db_get_recent_logs(limit=5):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT bot_name, timestamp, event FROM crash_log ORDER BY id DESC LIMIT ?", (limit,))
-        return await cursor.fetchall()
-
-# Userbots
-async def db_add_userbot(name, session_string, user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO userbots (name, session_string, status, user_id) VALUES (?, ?, ?, ?)", (name, session_string, "stopped", user_id))
-        await db.commit()
-
-async def db_remove_userbot(name):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM userbots WHERE name = ?", (name,))
-        await db.commit()
-
-async def db_update_userbot_status(name, status):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE userbots SET status = ? WHERE name = ?", (status, name))
-        await db.commit()
-
-async def db_get_userbots_for_user(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT name, session_string, status FROM userbots WHERE user_id = ?", (user_id,))
-        rows = await cursor.fetchall()
-        return rows
-
-async def db_get_all_userbots():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT name, session_string, status, user_id FROM userbots")
-        rows = await cursor.fetchall()
-        return rows
-
-# Users
-async def db_add_user(user_id, first_name):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO users (user_id, first_name, joined_at) VALUES (?, ?, ?)", (user_id, first_name, datetime.now().isoformat()))
-        await db.commit()
-
-async def db_get_user(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-        return await cursor.fetchone()
-
-async def db_set_premium(user_id, expiry_days):
-    expiry = (datetime.now() + timedelta(days=expiry_days)).isoformat() if expiry_days else None
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET is_premium = 1, expiry = ? WHERE user_id = ?", (expiry, user_id))
-        await db.commit()
-
-async def db_remove_premium(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET is_premium = 0, expiry = NULL WHERE user_id = ?", (user_id,))
-        await db.commit()
-
-# Admins
-async def db_add_admin(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (user_id,))
-        await db.commit()
-
-async def db_remove_admin(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
-        await db.commit()
-
-async def db_get_admins():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT user_id FROM admins")
-        rows = await cursor.fetchall()
-        return [row[0] for row in rows]
-
-# User files
-async def db_add_user_file(user_id, file_name, file_type):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO user_files (user_id, file_name, file_type) VALUES (?, ?, ?)", (user_id, file_name, file_type))
-        await db.commit()
-
-async def db_remove_user_file(user_id, file_name):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM user_files WHERE user_id = ? AND file_name = ?", (user_id, file_name))
-        await db.commit()
-
-async def db_get_user_files(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT file_name, file_type FROM user_files WHERE user_id = ?", (user_id,))
-        rows = await cursor.fetchall()
-        return rows
-
-async def db_get_all_user_files():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT user_id, file_name, file_type FROM user_files")
-        rows = await cursor.fetchall()
-        return rows
-
-# Blocked
-async def db_block_user(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO blocked (user_id) VALUES (?)", (user_id,))
-        await db.commit()
-
-async def db_unblock_user(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM blocked WHERE user_id = ?", (user_id,))
-        await db.commit()
-
-async def db_is_blocked(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT 1 FROM blocked WHERE user_id = ?", (user_id,))
-        return await cursor.fetchone() is not None
-
-# --------------------------
-# BOT MANAGER
-# --------------------------
-class BotManager:
-    def __init__(self):
-        self.clients: Dict[str, Client] = {}
-        self.bot_info: Dict[str, dict] = {}
-
-    async def load_from_db(self):
-        rows = await db_get_all_bots()
-        for name, token, status in rows:
-            client = Client(name=f"hosted_{name}", api_id=MASTER_API_ID, api_hash=MASTER_API_HASH, bot_token=token, in_memory=True)
-            self.clients[name] = client
-            self.bot_info[name] = {"token": token, "status": status, "client": client}
-            if status == "running":
-                try:
-                    await client.start()
-                    self.bot_info[name]["status"] = "running"
-                except Exception as e:
-                    await db_log_crash(name, f"Failed to auto-start on load: {e}")
-                    self.bot_info[name]["status"] = "stopped"
-                    await db_update_bot_status(name, "stopped")
-
-    async def add_bot(self, name: str, token: str):
-        if name in self.bot_info:
-            return False, "Bot name already exists."
-        client = Client(name=f"hosted_{name}", api_id=MASTER_API_ID, api_hash=MASTER_API_HASH, bot_token=token, in_memory=True)
-        self.clients[name] = client
-        self.bot_info[name] = {"token": token, "status": "stopped", "client": client}
-        await db_add_bot(name, token)
-        return True, f"Bot '{name}' added successfully."
-
-    async def remove_bot(self, name: str):
-        if name not in self.bot_info:
-            return False, "Bot not found."
-        client = self.clients.pop(name, None)
-        if client and client.is_initialized:
-            await client.stop()
-        self.bot_info.pop(name, None)
-        await db_remove_bot(name)
-        return True, f"Bot '{name}' removed."
-
-    async def start_bot(self, name: str):
-        if name not in self.bot_info:
-            return False, "Bot not found."
-        client = self.clients[name]
-        if self.bot_info[name]["status"] == "running":
-            return False, "Bot is already running."
-        try:
-            await client.start()
-            self.bot_info[name]["status"] = "running"
-            await db_update_bot_status(name, "running")
-            return True, f"Bot '{name}' started."
-        except Exception as e:
-            await db_log_crash(name, f"Start failed: {e}")
-            return False, f"Failed to start bot: {e}"
-
-    async def stop_bot(self, name: str):
-        if name not in self.bot_info:
-            return False, "Bot not found."
-        client = self.clients[name]
-        if self.bot_info[name]["status"] == "stopped":
-            return False, "Bot is already stopped."
-        try:
-            await client.stop()
-            self.bot_info[name]["status"] = "stopped"
-            await db_update_bot_status(name, "stopped")
-            return True, f"Bot '{name}' stopped."
-        except Exception as e:
-            return False, f"Failed to stop bot: {e}"
-
-    async def restart_bot(self, name: str):
-        stop_result = await self.stop_bot(name)
-        if not stop_result[0] and "already stopped" not in stop_result[1]:
-            return stop_result
-        return await self.start_bot(name)
-
-    def get_status(self) -> str:
-        if not self.bot_info:
-            return "No bots hosted yet."
-        lines = []
-        for name, info in self.bot_info.items():
-            status_emoji = "🟢" if info["status"] == "running" else "🔴"
-            lines.append(f"{status_emoji} **{name}** - {info['status']}")
-        return "\n".join(lines)
-
-    def list_bot_names(self):
-        return list(self.bot_info.keys())
-
-    async def health_check(self):
-        for name, info in self.bot_info.items():
-            if info["status"] == "running":
-                client = self.clients.get(name)
-                if client and not client.is_initialized:
-                    await db_log_crash(name, "Detected down by health check")
-                    success, msg = await self.restart_bot(name)
-                    if success:
-                        await db_log_crash(name, "Auto-restarted successfully")
-                    else:
-                        await db_log_crash(name, f"Auto-restart failed: {msg}")
-
-# --------------------------
-# USERBOT MANAGER
-# --------------------------
-class UserbotManager:
-    def __init__(self):
-        self.clients: Dict[str, Client] = {}
-        self.userbot_info: Dict[str, dict] = {}
-
-    async def load_from_db(self):
-        rows = await db_get_all_userbots()
-        for name, session_string, status, user_id in rows:
-            client = Client(name=f"hosted_userbot_{name}", api_id=MASTER_API_ID, api_hash=MASTER_API_HASH, session_string=session_string, in_memory=True)
-            self.clients[name] = client
-            self.userbot_info[name] = {"session_string": session_string, "status": status, "client": client, "user_id": user_id}
-            if status == "running":
-                try:
-                    await client.start()
-                    self.userbot_info[name]["status"] = "running"
-                except Exception as e:
-                    await db_log_crash(f"userbot:{name}", f"Failed to auto-start on load: {e}")
-                    self.userbot_info[name]["status"] = "stopped"
-                    await db_update_userbot_status(name, "stopped")
-
-    async def add_userbot(self, name: str, session_string: str, user_id: int):
-        if name in self.userbot_info:
-            return False, "Userbot name already exists."
-        client = Client(name=f"hosted_userbot_{name}", api_id=MASTER_API_ID, api_hash=MASTER_API_HASH, session_string=session_string, in_memory=True)
-        self.clients[name] = client
-        self.userbot_info[name] = {"session_string": session_string, "status": "stopped", "client": client, "user_id": user_id}
-        await db_add_userbot(name, session_string, user_id)
-        return True, f"Userbot '{name}' added successfully."
-
-    async def remove_userbot(self, name: str):
-        if name not in self.userbot_info:
-            return False, "Userbot not found."
-        client = self.clients.pop(name, None)
-        if client and client.is_initialized:
-            await client.stop()
-        self.userbot_info.pop(name, None)
-        await db_remove_userbot(name)
-        return True, f"Userbot '{name}' removed."
-
-    async def start_userbot(self, name: str):
-        if name not in self.userbot_info:
-            return False, "Userbot not found."
-        client = self.clients[name]
-        if self.userbot_info[name]["status"] == "running":
-            return False, "Userbot is already running."
-        try:
-            await client.start()
-            self.userbot_info[name]["status"] = "running"
-            await db_update_userbot_status(name, "running")
-            return True, f"Userbot '{name}' started."
-        except Exception as e:
-            await db_log_crash(f"userbot:{name}", f"Start failed: {e}")
-            return False, f"Failed to start userbot: {e}"
-
-    async def stop_userbot(self, name: str):
-        if name not in self.userbot_info:
-            return False, "Userbot not found."
-        client = self.clients[name]
-        if self.userbot_info[name]["status"] == "stopped":
-            return False, "Userbot is already stopped."
-        try:
-            await client.stop()
-            self.userbot_info[name]["status"] = "stopped"
-            await db_update_userbot_status(name, "stopped")
-            return True, f"Userbot '{name}' stopped."
-        except Exception as e:
-            return False, f"Failed to stop userbot: {e}"
-
-    async def restart_userbot(self, name: str):
-        stop_result = await self.stop_userbot(name)
-        if not stop_result[0] and "already stopped" not in stop_result[1]:
-            return stop_result
-        return await self.start_userbot(name)
-
-    def get_status(self, user_id=None) -> str:
-        if not self.userbot_info:
-            return "No userbots hosted yet."
-        lines = []
-        for name, info in self.userbot_info.items():
-            if user_id is not None and info.get("user_id") != user_id:
-                continue
-            status_emoji = "🟢" if info["status"] == "running" else "🔴"
-            lines.append(f"{status_emoji} **{name}** - {info['status']}")
-        return "\n".join(lines) if lines else "No userbots for this user."
-
-    def list_userbot_names(self, user_id=None):
-        if user_id is None:
-            return list(self.userbot_info.keys())
-        return [name for name, info in self.userbot_info.items() if info.get("user_id") == user_id]
-
-    async def health_check(self):
-        for name, info in self.userbot_info.items():
-            if info["status"] == "running":
-                client = self.clients.get(name)
-                if client and not client.is_initialized:
-                    await db_log_crash(f"userbot:{name}", "Detected down by health check")
-                    success, msg = await self.restart_userbot(name)
-                    if success:
-                        await db_log_crash(f"userbot:{name}", "Auto-restarted successfully")
-                    else:
-                        await db_log_crash(f"userbot:{name}", f"Auto-restart failed: {msg}")
-
-# --------------------------
-# SCRIPT MANAGER
-# --------------------------
-class ScriptManager:
-    def __init__(self):
-        self.processes: Dict[str, subprocess.Popen] = {}
-        self.log_files: Dict[str, str] = {}
-        self.script_info: Dict[str, dict] = {}
-
-    def get_user_folder(self, user_id):
-        folder = os.path.join(UPLOAD_BOTS_DIR, str(user_id))
-        os.makedirs(folder, exist_ok=True)
-        return folder
-
-    async def upload_script(self, user_id: int, file_name: str, file_content: bytes, file_type: str) -> Tuple[bool, str]:
-        files = await db_get_user_files(user_id)
-        if len(files) >= MAX_SCRIPTS_PER_USER:
-            return False, f"Script limit ({MAX_SCRIPTS_PER_USER}) reached."
-        user_folder = self.get_user_folder(user_id)
-        file_path = os.path.join(user_folder, file_name)
-        if os.path.exists(file_path):
-            return False, f"File '{file_name}' already exists."
-        with open(file_path, 'wb') as f:
-            f.write(file_content)
-        await db_add_user_file(user_id, file_name, file_type)
-        return True, f"File '{file_name}' uploaded."
-
-    async def delete_script(self, user_id: int, file_name: str) -> Tuple[bool, str]:
-        script_key = f"{user_id}_{file_name}"
-        if script_key in self.processes:
-            self.stop_script(user_id, file_name)
-        user_folder = self.get_user_folder(user_id)
-        file_path = os.path.join(user_folder, file_name)
-        log_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        if os.path.exists(log_path):
-            os.remove(log_path)
-        await db_remove_user_file(user_id, file_name)
-        return True, f"Deleted '{file_name}'."
-
-    def start_script(self, user_id: int, file_name: str, message_obj) -> bool:
-        script_key = f"{user_id}_{file_name}"
-        if script_key in self.processes:
-            return False
-        user_folder = self.get_user_folder(user_id)
-        file_path = os.path.join(user_folder, file_name)
-        if not os.path.exists(file_path):
-            return False
-        ext = os.path.splitext(file_name)[1].lower()
-        if ext == '.py':
-            cmd = [sys.executable, file_path]
-        elif ext == '.js':
-            cmd = ['node', file_path]
+# ============================================
+# HELPER: SastaOTP API CALL
+# ============================================
+def sasta_api_call(params):
+    """Make a GET request to SastaOTP API with api_key automatically added."""
+    params["api_key"] = SASTA_API_KEY
+    try:
+        resp = requests.get(SASTA_BASE_URL, params=params, timeout=15)
+        if resp.status_code == 200:
+            return resp.json()
         else:
-            return False
-        log_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
-        log_file = open(log_path, 'w', encoding='utf-8', errors='ignore')
-        try:
-            process = subprocess.Popen(cmd, cwd=user_folder, stdout=log_file, stderr=log_file, stdin=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
-            self.processes[script_key] = process
-            self.log_files[script_key] = log_path
-            self.script_info[script_key] = {"user_id": user_id, "file_name": file_name, "start_time": datetime.now(), "process": process}
-            return True
-        except Exception as e:
-            log_file.close()
-            return False
+            return {"status": "ERROR", "message": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
 
-    def stop_script(self, user_id: int, file_name: str):
-        script_key = f"{user_id}_{file_name}"
-        if script_key not in self.processes:
-            return
-        process = self.processes[script_key]
+# ============================================
+# START
+# ============================================
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
+
+    cursor.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO users (user_id, balance) VALUES (?, ?)", (user_id, 0))
+        conn.commit()
+
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("💰 Balance", "👛 Wallet")
+    markup.row("📲 Buy Number", "📩 Check SMS")
+    markup.row("➕ Add Funds")
+
+    # Send animated welcome
+    try:
+        bot.send_animation(
+            message.chat.id,
+            animation="https://media.giphy.com/media/RDZo7znAdn2u7sAcWH/giphy.gif",
+            caption="🔥 <b>Welcome to SastaOTP Bot</b>\n"
+                    "✦ ── ── ── ── ── ── ✦\n"
+                    "⚡ Fast & cheap virtual numbers\n"
+                    "💎 24/7 OTP delivery",
+            parse_mode="HTML"
+        )
+    except:
+        pass
+
+    bot.send_message(
+        message.chat.id,
+        "◈ <b>ADVANCED OTP BOT</b> ◈\n"
+        "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+        "✨ Choose an option from the menu below.",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+
+# ============================================
+# FIND IDS
+# ============================================
+@bot.message_handler(commands=['id'])
+def get_ids(message):
+    text = (
+        f"👤 <b>User ID:</b> <code>{message.from_user.id}</code>\n"
+        f"💬 <b>Chat ID:</b> <code>{message.chat.id}</code>"
+    )
+    bot.reply_to(message, text, parse_mode="HTML")
+
+# ============================================
+# WALLET (Local balance)
+# ============================================
+@bot.message_handler(func=lambda m: m.text == "👛 Wallet")
+def wallet(message):
+    user_id = message.from_user.id
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    balance = row[0] if row else 0
+    bot.reply_to(
+        message,
+        f"<b>💰 Wallet Balance</b>\n"
+        f"✦ ── ── ── ── ✦\n"
+        f"<code>{balance:.2f}</code> INR",
+        parse_mode="HTML"
+    )
+
+# ============================================
+# API BALANCE (SastaOTP)
+# ============================================
+@bot.message_handler(func=lambda m: m.text == "💰 Balance")
+def api_balance(message):
+    data = sasta_api_call({"action": "getBalance"})
+    if data.get("status") == "OK":
+        bal = data.get("balance", 0.0)
+        currency = data.get("currency", "INR")
+        bot.reply_to(
+            message,
+            f"<b>🌐 SastaOTP Balance</b>\n"
+            f"✦ ── ── ── ── ✦\n"
+            f"<code>{bal:.2f}</code> {currency}",
+            parse_mode="HTML"
+        )
+    else:
+        bot.reply_to(message, f"❌ <b>Error:</b> {data.get('message', 'Unknown')}", parse_mode="HTML")
+
+# ============================================
+# ADD FUNDS (UPI)
+# ============================================
+@bot.message_handler(func=lambda m: m.text == "➕ Add Funds")
+def add_funds(message):
+    text = (
+        f"💳 <b>Send Payment via UPI</b>\n"
+        f"✦ ── ── ── ── ✦\n"
+        f"🏦 <b>UPI ID:</b> <code>{UPI_ID}</code>\n\n"
+        f"📸 After payment, send a <b>screenshot</b> of the transaction.\n"
+        f"✅ Admin will approve and add funds to your wallet."
+    )
+    bot.send_message(message.chat.id, text, parse_mode="HTML")
+
+# ============================================
+# PAYMENT SCREENSHOT HANDLER
+# ============================================
+@bot.message_handler(content_types=['photo'])
+def payment_photo(message):
+    user_id = message.from_user.id
+    file_id = message.photo[-1].file_id
+
+    cursor.execute(
+        "INSERT INTO payments (user_id, amount, status, screenshot) VALUES (?, ?, ?, ?)",
+        (user_id, 100, "pending", file_id)
+    )
+    conn.commit()
+    payment_id = cursor.lastrowid
+
+    markup = types.InlineKeyboardMarkup()
+    approve_btn = types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{payment_id}_{user_id}")
+    reject_btn = types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{payment_id}_{user_id}")
+    markup.add(approve_btn, reject_btn)
+
+    caption = (
+        f"📥 <b>New Payment Request</b>\n"
+        f"✦ ── ── ── ── ✦\n"
+        f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"🆔 <b>Payment ID:</b> <code>{payment_id}</code>\n"
+        f"💰 <b>Amount:</b> 100 INR"
+    )
+
+    try:
+        bot.send_photo(ADMIN_CHAT_ID, file_id, caption=caption, reply_markup=markup, parse_mode="HTML")
+    except:
+        bot.send_photo(ADMIN_ID, file_id, caption=caption, reply_markup=markup, parse_mode="HTML")
+
+    bot.reply_to(message, "✅ <b>Payment submitted!</b>\n⏳ Waiting for admin approval.", parse_mode="HTML")
+
+# ============================================
+# ADMIN APPROVE / REJECT
+# ============================================
+@bot.callback_query_handler(func=lambda call: True)
+def callbacks(call):
+    data = call.data
+
+    if data.startswith("approve"):
+        _, payment_id, user_id = data.split("_")
+        amount = 100
+
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            new_balance = row[0] + amount
+            cursor.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, user_id))
+        else:
+            cursor.execute("INSERT INTO users (user_id, balance) VALUES (?, ?)", (user_id, amount))
+
+        cursor.execute("UPDATE payments SET status='approved' WHERE payment_id=?", (payment_id,))
+        conn.commit()
+
+        bot.send_message(int(user_id), f"✅ <b>Payment Approved!</b>\n💰 <code>{amount}</code> INR added to your wallet.", parse_mode="HTML")
+        bot.answer_callback_query(call.id, "✅ Approved")
+
+    elif data.startswith("reject"):
+        _, payment_id, user_id = data.split("_")
+        cursor.execute("UPDATE payments SET status='rejected' WHERE payment_id=?", (payment_id,))
+        conn.commit()
+        bot.send_message(int(user_id), "❌ <b>Payment Rejected.</b>", parse_mode="HTML")
+        bot.answer_callback_query(call.id, "❌ Rejected")
+
+# ============================================
+# BUY NUMBER (SastaOTP)
+# ============================================
+@bot.message_handler(func=lambda m: m.text == "📲 Buy Number")
+def buy_number(message):
+    user_id = message.from_user.id
+
+    # Check user balance
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    balance = row[0] if row else 0
+
+    if balance < 1:
+        bot.reply_to(message, "❌ <b>Insufficient wallet balance.</b>\nPlease add funds via ➕ Add Funds.", parse_mode="HTML")
+        return
+
+    # For simplicity, we hardcode service='tg' and country='91' (India)
+    # In a more advanced version, you can let the user choose from a list.
+    service = "tg"
+    country = "91"
+
+    data = sasta_api_call({
+        "action": "getNumber",
+        "service": service,
+        "country": country,
+        "format": "json"
+    })
+
+    if data.get("status") != "OK":
+        bot.reply_to(
+            message,
+            f"❌ <b>Failed to get number:</b>\n<code>{data.get('message', 'Unknown error')}</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    activation_id = data.get("activation_id")
+    order_id = data.get("order_id")
+    number = data.get("number")
+    price = data.get("price", 0.0)
+
+    # Deduct from user's wallet
+    new_balance = balance - price
+    cursor.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, user_id))
+
+    # Store activation in database
+    cursor.execute(
+        "INSERT INTO activations (user_id, activation_id, order_id, number, service, country, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user_id, activation_id, order_id, number, service, country, "active")
+    )
+    conn.commit()
+
+    # Send confirmation
+    text = (
+        f"✅ <b>Number Purchased!</b>\n"
+        f"✦ ── ── ── ── ── ✦\n"
+        f"📞 <b>Number:</b> <code>{number}</code>\n"
+        f"🆔 <b>Activation ID:</b> <code>{activation_id}</code>\n"
+        f"🔢 <b>Order ID:</b> <code>{order_id}</code>\n"
+        f"💰 <b>Price:</b> <code>{price:.2f}</code> INR\n"
+        f"💳 <b>New Balance:</b> <code>{new_balance:.2f}</code> INR\n\n"
+        f"📩 Use <b>Check SMS</b> and send the Activation ID to get your OTP."
+    )
+    bot.send_message(message.chat.id, text, parse_mode="HTML")
+
+# ============================================
+# CHECK SMS (SastaOTP)
+# ============================================
+@bot.message_handler(func=lambda m: m.text == "📩 Check SMS")
+def check_sms(message):
+    msg = bot.reply_to(message, "📨 <b>Send your Activation ID</b> (or Order ID) to retrieve SMS.", parse_mode="HTML")
+    bot.register_next_step_handler(msg, fetch_sms)
+
+def fetch_sms(message):
+    user_input = message.text.strip()
+    user_id = message.from_user.id
+
+    # Try to find activation in DB by activation_id or order_id
+    cursor.execute(
+        "SELECT activation_id FROM activations WHERE (activation_id=? OR order_id=?) AND user_id=?",
+        (user_input, user_input, user_id)
+    )
+    row = cursor.fetchone()
+    if not row:
+        bot.reply_to(message, "❌ <b>No activation found</b> with that ID.\nMake sure you own this number.", parse_mode="HTML")
+        return
+
+    activation_id = row[0]
+
+    # Call SastaOTP getStatus
+    data = sasta_api_call({
+        "action": "getStatus",
+        "id": activation_id
+    })
+
+    # SastaOTP returns status like "STATUS_OK" or "STATUS_WAIT_CODE" etc.
+    # The OTP code is usually in the response if received.
+    # Let's parse the response.
+    status = data.get("status")
+    if status == "STATUS_OK" or status == "OK":
+        # Sometimes code is in 'code' or 'sms' field
+        code = data.get("code") or data.get("sms") or data.get("message")
+        if code:
+            bot.reply_to(
+                message,
+                f"📩 <b>SMS Received</b>\n"
+                f"✦ ── ── ── ── ✦\n"
+                f"🔑 <b>OTP Code:</b> <code>{code}</code>",
+                parse_mode="HTML"
+            )
+        else:
+            bot.reply_to(message, "⌛ <b>No SMS yet.</b>\nPlease wait and try again later.", parse_mode="HTML")
+    elif "WAIT" in status or status == "STATUS_WAIT_CODE":
+        bot.reply_to(message, "⏳ <b>Waiting for SMS...</b>\nWe'll notify you when it arrives.\nUse /check again later.", parse_mode="HTML")
+    else:
+        bot.reply_to(
+            message,
+            f"❌ <b>Error:</b> {data.get('message', 'Unknown response')}\n{json.dumps(data, indent=2)}",
+            parse_mode="HTML"
+        )
+
+# ============================================
+# ADMIN: USERS COUNT
+# ============================================
+@bot.message_handler(commands=['users'])
+def users(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total = cursor.fetchone()[0]
+    bot.reply_to(message, f"👥 <b>Total Users:</b> <code>{total}</code>", parse_mode="HTML")
+
+# ============================================
+# ADMIN: BROADCAST
+# ============================================
+@bot.message_handler(commands=['broadcast'])
+def broadcast(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    msg = bot.reply_to(message, "📢 <b>Send your broadcast message</b> (HTML allowed)", parse_mode="HTML")
+    bot.register_next_step_handler(msg, send_broadcast)
+
+def send_broadcast(message):
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+    success = 0
+    for user in users:
         try:
-            process.terminate()
-            process.wait(timeout=5)
+            bot.send_message(user[0], message.text, parse_mode="HTML")
+            success += 1
         except:
-            try:
-                process.kill()
-            except:
-                pass
-        del self.processes[script_key]
-        del self.log_files[script_key]
-        del self.script_info[script_key]
-
-    def is_running(self, user_id: int, file_name: str) -> bool:
-        script_key = f"{user_id}_{file_name}"
-        if script_key not in self.processes:
-            return False
-        process = self.processes[script_key]
-        return process.poll() is None
-
-    def get_log(self, user_id: int, file_name: str, max_kb=100) -> str:
-        user_folder = self.get_user_folder(user_id)
-        log_path = os.path.join(user_folder, f"{os.path.splitext(file_name)[0]}.log")
-        if not os.path.exists(log_path):
-            return "No log file."
-        file_size = os.path.getsize(log_path)
-        if file_size == 0:
-            return "(Empty log)"
-        if file_size > max_kb * 1024:
-            with open(log_path, 'rb') as f:
-                f.seek(-max_kb * 1024, os.SEEK_END)
-                data = f.read()
-            content = data.decode('utf-8', errors='ignore')
-            return f"(Last {max_kb} KB)\n...\n{content}"
-        else:
-            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-                return f.read()
-
-    def get_running_scripts(self, user_id: int = None) -> List[dict]:
-        result = []
-        for key, info in self.script_info.items():
-            if user_id is not None and info["user_id"] != user_id:
-                continue
-            result.append(info)
-        return result
-
-# Initialize managers
-manager = BotManager()
-userbot_manager = UserbotManager()
-script_manager = ScriptManager()
-
-# --------------------------
-# MASTER CLIENT SETUP
-# --------------------------
-if MASTER_BOT_TOKEN:
-    master = Client("master_bot", api_id=MASTER_API_ID, api_hash=MASTER_API_HASH, bot_token=MASTER_BOT_TOKEN)
-elif MASTER_SESSION_STRING:
-    master = Client("master_userbot", api_id=MASTER_API_ID, api_hash=MASTER_API_HASH, session_string=MASTER_SESSION_STRING)
-else:
-    print("Please set MASTER_BOT_TOKEN or MASTER_SESSION_STRING.")
-    sys.exit(1)
-
-# --------------------------
-# HELPER FUNCTIONS
-# --------------------------
-async def send_animation(message: Message):
-    gif_url = random.choice(ANIMATIONS)
-    await message.reply_animation(animation=gif_url, caption="🌊 **Aquatic Power!**", parse_mode=ParseMode.MARKDOWN)
-
-async def send_extra_animation(message: Message):
-    gif_url = random.choice(EXTRA_ANIMATIONS)
-    await message.reply_animation(animation=gif_url, caption="🐠 **Extra Aquatic Animation!**", parse_mode=ParseMode.MARKDOWN)
-
-async def is_admin(user_id: int) -> bool:
-    admins = await db_get_admins()
-    return user_id in admins
-
-async def is_owner(user_id: int) -> bool:
-    return user_id == OWNER_ID
-
-async def is_premium(user_id: int) -> bool:
-    user = await db_get_user(user_id)
-    if not user:
-        return False
-    if user[3] == 1:
-        expiry = user[4]
-        if expiry and datetime.fromisoformat(expiry) > datetime.now():
-            return True
-        else:
-            await db_remove_premium(user_id)
-            return False
-    return False
-
-# --------------------------
-# INLINE KEYBOARDS
-# --------------------------
-async def main_menu_keyboard(user_id):
-    buttons = [
-        [InlineKeyboardButton("📋 List Bots", callback_data="list_bots"), InlineKeyboardButton("➕ Add Bot", callback_data="add_bot")],
-        [InlineKeyboardButton("▶️ Start Bot", callback_data="start_bot"), InlineKeyboardButton("⏹️ Stop Bot", callback_data="stop_bot")],
-        [InlineKeyboardButton("🔄 Restart Bot", callback_data="restart_bot"), InlineKeyboardButton("🗑️ Remove Bot", callback_data="remove_bot")],
-        [InlineKeyboardButton("👥 List Userbots", callback_data="list_userbots"), InlineKeyboardButton("➕ Add Userbot", callback_data="add_userbot")],
-        [InlineKeyboardButton("▶️ Start Userbot", callback_data="start_userbot"), InlineKeyboardButton("⏹️ Stop Userbot", callback_data="stop_userbot")],
-        [InlineKeyboardButton("🔄 Restart Userbot", callback_data="restart_userbot"), InlineKeyboardButton("🗑️ Remove Userbot", callback_data="remove_userbot")],
-        [InlineKeyboardButton("📁 My Scripts", callback_data="list_scripts"), InlineKeyboardButton("📤 Upload Script", callback_data="upload_script")],
-        [InlineKeyboardButton("▶️ Start Script", callback_data="start_script"), InlineKeyboardButton("⏹️ Stop Script", callback_data="stop_script")],
-        [InlineKeyboardButton("📜 View Logs", callback_data="view_logs"), InlineKeyboardButton("🗑️ Delete Script", callback_data="delete_script")],
-        [InlineKeyboardButton("🏓 Ping", callback_data="ping"), InlineKeyboardButton("🎬 Animation", callback_data="animation")],
-        [InlineKeyboardButton("🎞️ More Animations", callback_data="extra_animation"), InlineKeyboardButton("❤️ Health", callback_data="health")],
-        [InlineKeyboardButton("🌐 Web Dashboard", callback_data="web")],
-    ]
-    if await is_owner(user_id) or await is_admin(user_id):
-        buttons.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
-    return InlineKeyboardMarkup(buttons)
-
-def back_to_main():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="main_menu")]])
-
-def bot_selection_keyboard(action: str):
-    bot_names = manager.list_bot_names()
-    if not bot_names:
-        return None, "No bots available. Add a bot first."
-    buttons = []
-    for name in bot_names:
-        buttons.append([InlineKeyboardButton(name, callback_data=f"{action}:{name}")])
-    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="main_menu")])
-    return InlineKeyboardMarkup(buttons), None
-
-def userbot_selection_keyboard(action: str, user_id):
-    names = userbot_manager.list_userbot_names(user_id)
-    if not names:
-        return None, "No userbots available. Add a userbot first."
-    buttons = []
-    for name in names:
-        buttons.append([InlineKeyboardButton(name, callback_data=f"ub_{action}:{name}")])
-    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="main_menu")])
-    return InlineKeyboardMarkup(buttons), None
-
-# --------------------------
-# OTP LOGIN
-# --------------------------
-pending_logins = {}
-
-async def start_otp_login(user_id, phone):
-    try:
-        client = Client(f"login_{user_id}", api_id=MASTER_API_ID, api_hash=MASTER_API_HASH, in_memory=True)
-        await client.connect()
-        sent = await client.send_code(phone)
-        pending_logins[user_id] = {"client": client, "phone": phone, "phone_code_hash": sent.phone_code_hash}
-        return True, "OTP sent. Please send the code via /code <code>"
-    except Exception as e:
-        return False, str(e)
-
-async def complete_otp_login(user_id, code):
-    data = pending_logins.get(user_id)
-    if not data:
-        return False, "No pending login. Start with /host"
-    client = data["client"]
-    phone = data["phone"]
-    phone_code_hash = data["phone_code_hash"]
-    try:
-        await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
-        session_string = await client.export_session_string()
-        await client.disconnect()
-        pending_logins.pop(user_id, None)
-        return True, session_string
-    except SessionPasswordNeeded:
-        return "2fa", "2FA required. Send /2fa <password>"
-    except PhoneCodeInvalid:
-        return False, "Invalid code. Try again."
-    except PhoneCodeExpired:
-        return False, "Code expired. Start /host again."
-    except Exception as e:
-        return False, str(e)
-
-async def complete_2fa_login(user_id, password):
-    data = pending_logins.get(user_id)
-    if not data:
-        return False, "No pending login."
-    client = data["client"]
-    try:
-        await client.sign_in(password=password)
-        session_string = await client.export_session_string()
-        await client.disconnect()
-        pending_logins.pop(user_id, None)
-        return True, session_string
-    except Exception as e:
-        return False, str(e)
-
-# --------------------------
-# MASTER COMMAND HANDLERS
-# --------------------------
-@master.on_message(filters.command("start") & filters.private)
-async def start_command(client, message):
-    user_id = message.from_user.id
-    await db_add_user(user_id, message.from_user.first_name)
-    await send_animation(message)
-    await message.reply_text(
-        "**🌊 Welcome to the Super Duper Bot Hoster!**\n"
-        "Manage your hosted bots, userbots, and scripts with the menu below:",
-        reply_markup=await main_menu_keyboard(user_id),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-@master.on_message(filters.command("help"))
-async def help_command(client, message):
-    help_text = """
-**🤖 Bot Hoster Commands**
-- `/start` - Main menu
-- `/help` - This help
-- `/addbot <name> <token>` - Add a new bot
-- `/removebot <name>` - Remove a bot
-- `/startbot <name>` - Start a bot
-- `/stopbot <name>` - Stop a bot
-- `/restartbot <name>` - Restart a bot
-- `/listbots` - List all bots and status
-
-**👥 Userbot Commands**
-- `/adduserbot <name>` - Add a userbot via OTP (then follow steps)
-- `/removeuserbot <name>` - Remove a userbot
-- `/startuserbot <name>` - Start a userbot
-- `/stopuserbot <name>` - Stop a userbot
-- `/restartuserbot <name>` - Restart a userbot
-- `/listuserbots` - List all userbots
-
-**📁 Script Commands**
-- `/upload` - Upload a Python/JS script (reply to file)
-- `/files` - List your uploaded scripts
-- `/startscript <filename>` - Start a script
-- `/stopscript <filename>` - Stop a script
-- `/deletescript <filename>` - Delete a script
-- `/logs <filename>` - View script logs
-
-**Admin Commands** (Owner/Admin)
-- `/addadmin <user_id>` - Add admin
-- `/removeadmin <user_id>` - Remove admin
-- `/listadmins` - List admins
-- `/subscription <user_id> <days>` - Give premium
-- `/removepremium <user_id>` - Remove premium
-- `/broadcast` - Send broadcast (reply to message)
-- `/stats` - Bot statistics
-- `/lock` - Lock bot
-- `/unlock` - Unlock bot
-
-**Other**
-- `/ping` - Check latency
-- `/animation` - Random aquatic GIF
-- `/extra_animation` - Extra GIFs
-- `/web` - Web dashboard link (disabled)
-- `/health` - Health check
-"""
-    await message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
-
-# OTP flow commands
-@master.on_message(filters.command("host") & filters.private)
-async def host_command(client, message):
-    user_id = message.from_user.id
-    userbots = await db_get_userbots_for_user(user_id)
-    if len(userbots) >= MAX_USERBOTS_PER_USER:
-        await message.reply_text(f"⚠️ You already have {MAX_USERBOTS_PER_USER} userbots. Remove one first.")
-        return
-    await message.reply_text(
-        "📱 **Add Userbot via OTP**\n"
-        "Send your phone number in format: `+911234567890`\n"
-        "Reply with `/host <phone>`"
-    )
-
-@master.on_message(filters.command("host") & filters.private)
-async def host_phone_command(client, message):
-    user_id = message.from_user.id
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/host +911234567890`")
-        return
-    phone = parts[1].strip()
-    if not phone.startswith('+'):
-        phone = '+' + phone
-    userbots = await db_get_userbots_for_user(user_id)
-    if len(userbots) >= MAX_USERBOTS_PER_USER:
-        await message.reply_text(f"⚠️ You already have {MAX_USERBOTS_PER_USER} userbots.")
-        return
-    success, msg = await start_otp_login(user_id, phone)
-    if success:
-        await message.reply_text(f"✅ OTP sent to {phone}. Use `/code <code>` to complete.")
-    else:
-        await message.reply_text(f"❌ Failed: {msg}")
-
-@master.on_message(filters.command("code") & filters.private)
-async def code_command(client, message):
-    user_id = message.from_user.id
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/code 12345`")
-        return
-    code = parts[1].strip()
-    result = await complete_otp_login(user_id, code)
-    if isinstance(result, tuple):
-        success, data = result
-        if success:
-            session_string = data
-            name = f"ub_{user_id}_{int(time.time())}"
-            success2, msg2 = await userbot_manager.add_userbot(name, session_string, user_id)
-            if success2:
-                await message.reply_text(f"✅ Userbot '{name}' added and ready. Use /startuserbot {name} to start.")
-            else:
-                await message.reply_text(f"❌ Failed to save userbot: {msg2}")
-        else:
-            await message.reply_text(f"❌ {data}")
-    elif result == "2fa":
-        await message.reply_text("🔐 2FA required. Send `/2fa <password>`")
-    else:
-        await message.reply_text(f"❌ {result}")
-
-@master.on_message(filters.command("2fa") & filters.private)
-async def twofa_command(client, message):
-    user_id = message.from_user.id
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/2fa your_password`")
-        return
-    password = parts[1].strip()
-    result = await complete_2fa_login(user_id, password)
-    if isinstance(result, tuple):
-        success, data = result
-        if success:
-            session_string = data
-            name = f"ub_{user_id}_{int(time.time())}"
-            success2, msg2 = await userbot_manager.add_userbot(name, session_string, user_id)
-            if success2:
-                await message.reply_text(f"✅ Userbot '{name}' added and ready.")
-            else:
-                await message.reply_text(f"❌ Failed to save userbot: {msg2}")
-        else:
-            await message.reply_text(f"❌ {data}")
-    else:
-        await message.reply_text(f"❌ {result}")
-
-# Existing bot commands
-@master.on_message(filters.command("addbot"))
-async def addbot_command(client, message):
-    try:
-        parts = message.text.split(maxsplit=2)
-        if len(parts) < 3:
-            await message.reply_text("Usage: `/addbot <name> <token>`")
-            return
-        name, token = parts[1], parts[2]
-        success, msg = await manager.add_bot(name, token)
-        await message.reply_text(msg)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-
-@master.on_message(filters.command("removebot"))
-async def removebot_command(client, message):
-    try:
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: `/removebot <name>`")
-            return
-        name = parts[1]
-        success, msg = await manager.remove_bot(name)
-        await message.reply_text(msg)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-
-@master.on_message(filters.command("startbot"))
-async def startbot_command(client, message):
-    try:
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: `/startbot <name>`")
-            return
-        name = parts[1]
-        success, msg = await manager.start_bot(name)
-        await message.reply_text(msg)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-
-@master.on_message(filters.command("stopbot"))
-async def stopbot_command(client, message):
-    try:
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: `/stopbot <name>`")
-            return
-        name = parts[1]
-        success, msg = await manager.stop_bot(name)
-        await message.reply_text(msg)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-
-@master.on_message(filters.command("restartbot"))
-async def restartbot_command(client, message):
-    try:
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: `/restartbot <name>`")
-            return
-        name = parts[1]
-        success, msg = await manager.restart_bot(name)
-        await message.reply_text(msg)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-
-@master.on_message(filters.command("listbots"))
-async def listbots_command(client, message):
-    status_text = manager.get_status()
-    await message.reply_text(f"**📋 Hosted Bots:**\n{status_text}", parse_mode=ParseMode.MARKDOWN)
-
-# Userbot commands
-@master.on_message(filters.command("removeuserbot"))
-async def removeuserbot_command(client, message):
-    try:
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: `/removeuserbot <name>`")
-            return
-        name = parts[1]
-        success, msg = await userbot_manager.remove_userbot(name)
-        await message.reply_text(msg)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-
-@master.on_message(filters.command("startuserbot"))
-async def startuserbot_command(client, message):
-    try:
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: `/startuserbot <name>`")
-            return
-        name = parts[1]
-        success, msg = await userbot_manager.start_userbot(name)
-        await message.reply_text(msg)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-
-@master.on_message(filters.command("stopuserbot"))
-async def stopuserbot_command(client, message):
-    try:
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: `/stopuserbot <name>`")
-            return
-        name = parts[1]
-        success, msg = await userbot_manager.stop_userbot(name)
-        await message.reply_text(msg)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-
-@master.on_message(filters.command("restartuserbot"))
-async def restartuserbot_command(client, message):
-    try:
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: `/restartuserbot <name>`")
-            return
-        name = parts[1]
-        success, msg = await userbot_manager.restart_userbot(name)
-        await message.reply_text(msg)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-
-@master.on_message(filters.command("listuserbots"))
-async def listuserbots_command(client, message):
-    user_id = message.from_user.id
-    status_text = userbot_manager.get_status(user_id)
-    await message.reply_text(f"**👥 Your Userbots:**\n{status_text}", parse_mode=ParseMode.MARKDOWN)
-
-# Script commands
-@master.on_message(filters.command("upload") & filters.private)
-async def upload_command(client, message):
-    await message.reply_text("📤 Reply to this message with your Python/JS file or a ZIP archive.")
-
-@master.on_message(filters.document & filters.private)
-async def handle_file_upload(client, message):
-    user_id = message.from_user.id
-    doc = message.document
-    if not doc:
-        return
-    file_name = doc.file_name
-    if not file_name:
-        await message.reply_text("⚠️ No file name.")
-        return
-    ext = os.path.splitext(file_name)[1].lower()
-    if ext not in ['.py', '.js', '.zip']:
-        await message.reply_text("⚠️ Only .py, .js, .zip allowed.")
-        return
-    files = await db_get_user_files(user_id)
-    if len(files) >= MAX_SCRIPTS_PER_USER:
-        await message.reply_text(f"⚠️ Script limit ({MAX_SCRIPTS_PER_USER}) reached.")
-        return
-    file_path = await client.download_media(message, file_name=os.path.join(UPLOAD_BOTS_DIR, str(user_id), file_name))
-    if not file_path:
-        await message.reply_text("❌ Failed to download file.")
-        return
-    if ext == '.zip':
-        temp_dir = tempfile.mkdtemp(prefix=f"user_{user_id}_zip_")
-        try:
-            with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                zip_ref.extractall(temp_dir)
-            py_files = []
-            js_files = []
-            for root, dirs, files_in in os.walk(temp_dir):
-                for f in files_in:
-                    if f.endswith('.py'):
-                        py_files.append(os.path.join(root, f))
-                    elif f.endswith('.js'):
-                        js_files.append(os.path.join(root, f))
-            if not py_files and not js_files:
-                await message.reply_text("❌ No .py or .js found in archive.")
-                return
-            user_folder = script_manager.get_user_folder(user_id)
-            for root, dirs, files_in in os.walk(temp_dir):
-                for f in files_in:
-                    src = os.path.join(root, f)
-                    rel_path = os.path.relpath(src, temp_dir)
-                    dst = os.path.join(user_folder, rel_path)
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.move(src, dst)
-            main_script = None
-            if py_files:
-                for pref in ['main.py', 'bot.py', 'app.py']:
-                    for p in py_files:
-                        if os.path.basename(p) == pref:
-                            main_script = p
-                            break
-                    if main_script:
-                        break
-                if not main_script:
-                    main_script = py_files[0]
-                file_type = 'py'
-            else:
-                for pref in ['main.js', 'index.js', 'bot.js', 'app.js']:
-                    for p in js_files:
-                        if os.path.basename(p) == pref:
-                            main_script = p
-                            break
-                    if main_script:
-                        break
-                if not main_script:
-                    main_script = js_files[0]
-                file_type = 'js'
-            main_script_name = os.path.basename(main_script)
-            await db_add_user_file(user_id, main_script_name, file_type)
-            await message.reply_text(f"✅ Archive extracted and main script `{main_script_name}` registered.")
-            req_path = os.path.join(user_folder, 'requirements.txt')
-            if os.path.exists(req_path):
-                await message.reply_text("🔄 Installing Python dependencies...")
-                try:
-                    subprocess.run([sys.executable, '-m', 'pip', 'install', '-r', req_path], check=True, capture_output=True)
-                    await message.reply_text("✅ Dependencies installed.")
-                except subprocess.CalledProcessError as e:
-                    await message.reply_text(f"❌ Failed to install dependencies: {e.stderr.decode()}")
-            pkg_path = os.path.join(user_folder, 'package.json')
-            if os.path.exists(pkg_path):
-                await message.reply_text("🔄 Installing Node dependencies...")
-                try:
-                    subprocess.run(['npm', 'install'], cwd=user_folder, check=True, capture_output=True)
-                    await message.reply_text("✅ Node dependencies installed.")
-                except subprocess.CalledProcessError as e:
-                    await message.reply_text(f"❌ Failed to install Node deps: {e.stderr.decode()}")
-        except Exception as e:
-            await message.reply_text(f"❌ Error processing zip: {e}")
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            os.remove(file_path)
-        return
-    else:
-        file_type = 'py' if ext == '.py' else 'js'
-        await db_add_user_file(user_id, file_name, file_type)
-        await message.reply_text(f"✅ File `{file_name}` uploaded. Use /files to manage.")
-
-@master.on_message(filters.command("files") & filters.private)
-async def list_files_command(client, message):
-    user_id = message.from_user.id
-    files = await db_get_user_files(user_id)
-    if not files:
-        await message.reply_text("📁 No scripts uploaded.")
-        return
-    lines = []
-    for fname, ftype in files:
-        running = script_manager.is_running(user_id, fname)
-        status = "🟢 Running" if running else "🔴 Stopped"
-        lines.append(f"`{fname}` ({ftype}) - {status}")
-    await message.reply_text("📁 **Your Scripts:**\n" + "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-
-@master.on_message(filters.command("startscript") & filters.private)
-async def start_script_command(client, message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/startscript <filename>`")
-        return
-    file_name = parts[1]
-    user_id = message.from_user.id
-    files = await db_get_user_files(user_id)
-    if not any(f[0] == file_name for f in files):
-        await message.reply_text("❌ Script not found.")
-        return
-    if script_manager.is_running(user_id, file_name):
-        await message.reply_text("⚠️ Script already running.")
-        return
-    success = script_manager.start_script(user_id, file_name, message)
-    if success:
-        await message.reply_text(f"✅ Script `{file_name}` started.")
-    else:
-        await message.reply_text(f"❌ Failed to start script. Check logs.")
-
-@master.on_message(filters.command("stopscript") & filters.private)
-async def stop_script_command(client, message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/stopscript <filename>`")
-        return
-    file_name = parts[1]
-    user_id = message.from_user.id
-    files = await db_get_user_files(user_id)
-    if not any(f[0] == file_name for f in files):
-        await message.reply_text("❌ Script not found.")
-        return
-    if not script_manager.is_running(user_id, file_name):
-        await message.reply_text("⚠️ Script not running.")
-        return
-    script_manager.stop_script(user_id, file_name)
-    await message.reply_text(f"✅ Script `{file_name}` stopped.")
-
-@master.on_message(filters.command("deletescript") & filters.private)
-async def delete_script_command(client, message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/deletescript <filename>`")
-        return
-    file_name = parts[1]
-    user_id = message.from_user.id
-    files = await db_get_user_files(user_id)
-    if not any(f[0] == file_name for f in files):
-        await message.reply_text("❌ Script not found.")
-        return
-    success, msg = await script_manager.delete_script(user_id, file_name)
-    await message.reply_text(msg)
-
-@master.on_message(filters.command("logs") & filters.private)
-async def logs_command(client, message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/logs <filename>`")
-        return
-    file_name = parts[1]
-    user_id = message.from_user.id
-    files = await db_get_user_files(user_id)
-    if not any(f[0] == file_name for f in files):
-        await message.reply_text("❌ Script not found.")
-        return
-    log_content = script_manager.get_log(user_id, file_name)
-    if len(log_content) > 4000:
-        log_content = log_content[-4000:]
-    await message.reply_text(f"📜 **Logs for {file_name}:**\n```\n{log_content}\n```", parse_mode=ParseMode.MARKDOWN)
-
-# Admin commands
-@master.on_message(filters.command("addadmin") & filters.private)
-async def add_admin_command(client, message):
-    if not await is_owner(message.from_user.id):
-        await message.reply_text("⚠️ Owner only.")
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/addadmin <user_id>`")
-        return
-    try:
-        uid = int(parts[1])
-        await db_add_admin(uid)
-        await message.reply_text(f"✅ User {uid} is now admin.")
-    except:
-        await message.reply_text("❌ Invalid user ID.")
-
-@master.on_message(filters.command("removeadmin") & filters.private)
-async def remove_admin_command(client, message):
-    if not await is_owner(message.from_user.id):
-        await message.reply_text("⚠️ Owner only.")
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/removeadmin <user_id>`")
-        return
-    try:
-        uid = int(parts[1])
-        if uid == OWNER_ID:
-            await message.reply_text("❌ Cannot remove owner.")
-            return
-        await db_remove_admin(uid)
-        await message.reply_text(f"✅ Admin {uid} removed.")
-    except:
-        await message.reply_text("❌ Invalid user ID.")
-
-@master.on_message(filters.command("listadmins") & filters.private)
-async def list_admins_command(client, message):
-    if not await is_admin(message.from_user.id):
-        await message.reply_text("⚠️ Admin only.")
-        return
-    admins = await db_get_admins()
-    if not admins:
-        await message.reply_text("No admins.")
-        return
-    lines = [f"- `{uid}`" for uid in admins]
-    await message.reply_text("👑 **Admins:**\n" + "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-
-@master.on_message(filters.command("subscription") & filters.private)
-async def subscription_command(client, message):
-    if not await is_admin(message.from_user.id):
-        await message.reply_text("⚠️ Admin only.")
-        return
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.reply_text("Usage: `/subscription <user_id> <days>`")
-        return
-    try:
-        uid = int(parts[1])
-        days = int(parts[2])
-        await db_set_premium(uid, days)
-        await message.reply_text(f"✅ User {uid} got premium for {days} days.")
-    except:
-        await message.reply_text("❌ Invalid input.")
-
-@master.on_message(filters.command("removepremium") & filters.private)
-async def remove_premium_command(client, message):
-    if not await is_admin(message.from_user.id):
-        await message.reply_text("⚠️ Admin only.")
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.reply_text("Usage: `/removepremium <user_id>`")
-        return
-    try:
-        uid = int(parts[1])
-        await db_remove_premium(uid)
-        await message.reply_text(f"✅ Premium removed from {uid}.")
-    except:
-        await message.reply_text("❌ Invalid user ID.")
-
-@master.on_message(filters.command("broadcast") & filters.private)
-async def broadcast_command(client, message):
-    if not await is_admin(message.from_user.id):
-        await message.reply_text("⚠️ Admin only.")
-        return
-    if not message.reply_to_message:
-        await message.reply_text("Reply to a message to broadcast.")
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT user_id FROM users")
-        users = [row[0] for row in await cursor.fetchall()]
-    if not users:
-        await message.reply_text("No users to broadcast.")
-        return
-    await message.reply_text(f"📢 Broadcasting to {len(users)} users...")
-    success_count = 0
-    for uid in users:
-        try:
-            await message.reply_to_message.copy(uid)
-            success_count += 1
-        except Exception:
             pass
-        await asyncio.sleep(0.1)
-    await message.reply_text(f"✅ Broadcast sent to {success_count} users.")
+    bot.reply_to(message, f"✅ <b>Broadcast sent to</b> <code>{success}</code> users.", parse_mode="HTML")
 
-@master.on_message(filters.command("stats") & filters.private)
-async def stats_command(client, message):
-    if not await is_admin(message.from_user.id):
-        await message.reply_text("⚠️ Admin only.")
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT COUNT(*) FROM users")
-        total_users = (await cursor.fetchone())[0]
-        cursor = await db.execute("SELECT COUNT(*) FROM user_files")
-        total_files = (await cursor.fetchone())[0]
-        cursor = await db.execute("SELECT COUNT(*) FROM userbots")
-        total_userbots = (await cursor.fetchone())[0]
-        cursor = await db.execute("SELECT COUNT(*) FROM bots")
-        total_bots = (await cursor.fetchone())[0]
-    running_userbots = sum(1 for name, info in userbot_manager.userbot_info.items() if info["status"] == "running")
-    running_bots = sum(1 for name, info in manager.bot_info.items() if info["status"] == "running")
-    running_scripts = len(script_manager.processes)
-    await message.reply_text(
-        f"📊 **Statistics**\n"
-        f"👥 Total users: {total_users}\n"
-        f"🤖 Bots: {total_bots} (running: {running_bots})\n"
-        f"👤 Userbots: {total_userbots} (running: {running_userbots})\n"
-        f"📁 Scripts: {total_files} (running: {running_scripts})"
-    )
-
-@master.on_message(filters.command("lock") & filters.private)
-async def lock_bot(client, message):
-    if not await is_admin(message.from_user.id):
-        await message.reply_text("⚠️ Admin only.")
-        return
-    global bot_locked
-    bot_locked = True
-    await message.reply_text("🔒 Bot locked. Only admins can use commands.")
-
-@master.on_message(filters.command("unlock") & filters.private)
-async def unlock_bot(client, message):
-    if not await is_admin(message.from_user.id):
-        await message.reply_text("⚠️ Admin only.")
-        return
-    global bot_locked
-    bot_locked = False
-    await message.reply_text("🔓 Bot unlocked.")
-
-# Other commands
-@master.on_message(filters.command("ping"))
-async def ping_command(client, message):
-    start = time.time()
-    msg = await message.reply_text("🏓 Pinging...")
-    latency = round((time.time() - start) * 1000, 2)
-    await msg.edit_text(f"🏓 **Pong!**\nLatency: `{latency} ms`", parse_mode=ParseMode.MARKDOWN)
-
-@master.on_message(filters.command("animation"))
-async def animation_command(client, message):
-    await send_animation(message)
-
-@master.on_message(filters.command("extra_animation"))
-async def extra_animation_command(client, message):
-    await send_extra_animation(message)
-
-@master.on_message(filters.command("web") | filters.command("dashboard"))
-async def web_command(client, message):
-    await message.reply_text("🌐 Web dashboard is disabled. Use Telegram commands only.")
-
-@master.on_message(filters.command("health"))
-async def health_command(client, message):
-    await manager.health_check()
-    await userbot_manager.health_check()
-    status_text = manager.get_status() + "\n\n**Userbots:**\n" + userbot_manager.get_status()
-    logs = await db_get_recent_logs(5)
-    log_text = "\n".join([f"`{log[0]}` - {log[1]}: {log[2]}" for log in logs]) if logs else "No recent logs."
-    await message.reply_text(
-        f"**❤️ Health Check Completed**\n\n**Current Status:**\n{status_text}\n\n**Recent Logs:**\n{log_text}",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-# --------------------------
-# CALLBACK QUERY HANDLERS
-# --------------------------
-@master.on_callback_query()
-async def handle_callback(client, callback_query: CallbackQuery):
-    data = callback_query.data
-    user_id = callback_query.from_user.id
-    await callback_query.answer()
-
-    if data == "main_menu":
-        await callback_query.message.edit_text(
-            "**🌊 Main Menu**\nChoose an option:",
-            reply_markup=await main_menu_keyboard(user_id),
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif data == "list_bots":
-        status_text = manager.get_status()
-        await callback_query.message.edit_text(
-            f"**📋 Hosted Bots:**\n{status_text}",
-            reply_markup=back_to_main(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif data == "add_bot":
-        await callback_query.message.edit_text(
-            "➕ To add a bot, use command:\n`/addbot <name> <token>`",
-            reply_markup=back_to_main(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif data in ["start_bot", "stop_bot", "restart_bot", "remove_bot"]:
-        action_map = {"start_bot": "start", "stop_bot": "stop", "restart_bot": "restart", "remove_bot": "remove"}
-        action = action_map[data]
-        kb, error = bot_selection_keyboard(action)
-        if error:
-            await callback_query.message.edit_text(error, reply_markup=back_to_main())
-        else:
-            await callback_query.message.edit_text(f"Select a bot to {action}:", reply_markup=kb)
-    elif data.startswith("start:") or data.startswith("stop:") or data.startswith("restart:") or data.startswith("remove:"):
-        action, bot_name = data.split(":", 1)
-        if action == "start":
-            success, msg = await manager.start_bot(bot_name)
-        elif action == "stop":
-            success, msg = await manager.stop_bot(bot_name)
-        elif action == "restart":
-            success, msg = await manager.restart_bot(bot_name)
-        elif action == "remove":
-            success, msg = await manager.remove_bot(bot_name)
-        await callback_query.message.edit_text(msg, reply_markup=back_to_main(), parse_mode=ParseMode.MARKDOWN)
-
-    # Userbot callbacks
-    elif data == "list_userbots":
-        status_text = userbot_manager.get_status(user_id)
-        await callback_query.message.edit_text(
-            f"**👥 Your Userbots:**\n{status_text}",
-            reply_markup=back_to_main(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif data == "add_userbot":
-        await callback_query.message.edit_text(
-            "➕ To add a userbot, use command:\n`/host +911234567890`\nThen `/code <code>`",
-            reply_markup=back_to_main(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif data in ["start_userbot", "stop_userbot", "restart_userbot", "remove_userbot"]:
-        action_map = {"start_userbot": "start", "stop_userbot": "stop", "restart_userbot": "restart", "remove_userbot": "remove"}
-        action = action_map[data]
-        kb, error = userbot_selection_keyboard(action, user_id)
-        if error:
-            await callback_query.message.edit_text(error, reply_markup=back_to_main())
-        else:
-            await callback_query.message.edit_text(f"Select a userbot to {action}:", reply_markup=kb)
-    elif data.startswith("ub_start:") or data.startswith("ub_stop:") or data.startswith("ub_restart:") or data.startswith("ub_remove:"):
-        action, name = data.split(":", 1)[0].replace("ub_", ""), data.split(":", 1)[1]
-        if action == "start":
-            success, msg = await userbot_manager.start_userbot(name)
-        elif action == "stop":
-            success, msg = await userbot_manager.stop_userbot(name)
-        elif action == "restart":
-            success, msg = await userbot_manager.restart_userbot(name)
-        elif action == "remove":
-            success, msg = await userbot_manager.remove_userbot(name)
-        await callback_query.message.edit_text(msg, reply_markup=back_to_main(), parse_mode=ParseMode.MARKDOWN)
-
-    # Script callbacks
-    elif data == "list_scripts":
-        files = await db_get_user_files(user_id)
-        if not files:
-            await callback_query.message.edit_text("📁 No scripts uploaded.", reply_markup=back_to_main())
-            return
-        lines = []
-        kb = InlineKeyboardMarkup(row_width=1)
-        for fname, ftype in files:
-            running = script_manager.is_running(user_id, fname)
-            status = "🟢 Running" if running else "🔴 Stopped"
-            lines.append(f"`{fname}` ({ftype}) - {status}")
-            kb.add(InlineKeyboardButton(f"{fname} - {status}", callback_data=f"script_{user_id}_{fname}"))
-        kb.add(InlineKeyboardButton("⬅️ Back", callback_data="main_menu"))
-        await callback_query.message.edit_text("📁 **Your Scripts:**\n" + "\n".join(lines), reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
-    elif data == "upload_script":
-        await callback_query.message.edit_text("📤 Reply to this message with your Python/JS file or ZIP.", reply_markup=back_to_main())
-    elif data.startswith("script_"):
-        _, uid_str, fname = data.split("_", 2)
-        uid = int(uid_str)
-        if uid != user_id and not await is_admin(user_id):
-            await callback_query.message.edit_text("⚠️ Not your script.", reply_markup=back_to_main())
-            return
-        running = script_manager.is_running(uid, fname)
-        kb = InlineKeyboardMarkup(row_width=2)
-        if running:
-            kb.add(InlineKeyboardButton("⏹️ Stop", callback_data=f"stopscript_{uid}_{fname}"))
-        else:
-            kb.add(InlineKeyboardButton("▶️ Start", callback_data=f"startscript_{uid}_{fname}"))
-        kb.add(InlineKeyboardButton("📜 Logs", callback_data=f"logscript_{uid}_{fname}"))
-        kb.add(InlineKeyboardButton("🗑️ Delete", callback_data=f"deletescript_{uid}_{fname}"))
-        kb.add(InlineKeyboardButton("⬅️ Back", callback_data="list_scripts"))
-        await callback_query.message.edit_text(f"Controls for `{fname}`", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
-    elif data.startswith("startscript_"):
-        _, uid_str, fname = data.split("_", 2)
-        uid = int(uid_str)
-        if uid != user_id and not await is_admin(user_id):
-            await callback_query.message.edit_text("⚠️ Not your script.", reply_markup=back_to_main())
-            return
-        success = script_manager.start_script(uid, fname, callback_query.message)
-        msg = "✅ Started." if success else "❌ Failed."
-        await callback_query.message.edit_text(msg, reply_markup=back_to_main())
-    elif data.startswith("stopscript_"):
-        _, uid_str, fname = data.split("_", 2)
-        uid = int(uid_str)
-        if uid != user_id and not await is_admin(user_id):
-            await callback_query.message.edit_text("⚠️ Not your script.", reply_markup=back_to_main())
-            return
-        script_manager.stop_script(uid, fname)
-        await callback_query.message.edit_text("✅ Stopped.", reply_markup=back_to_main())
-    elif data.startswith("logscript_"):
-        _, uid_str, fname = data.split("_", 2)
-        uid = int(uid_str)
-        if uid != user_id and not await is_admin(user_id):
-            await callback_query.message.edit_text("⚠️ Not your script.", reply_markup=back_to_main())
-            return
-        log_content = script_manager.get_log(uid, fname)
-        if len(log_content) > 4000:
-            log_content = log_content[-4000:]
-        await callback_query.message.edit_text(f"📜 **Logs:**\n```\n{log_content}\n```", parse_mode=ParseMode.MARKDOWN, reply_markup=back_to_main())
-    elif data.startswith("deletescript_"):
-        _, uid_str, fname = data.split("_", 2)
-        uid = int(uid_str)
-        if uid != user_id and not await is_admin(user_id):
-            await callback_query.message.edit_text("⚠️ Not your script.", reply_markup=back_to_main())
-            return
-        success, msg = await script_manager.delete_script(uid, fname)
-        await callback_query.message.edit_text(msg, reply_markup=back_to_main())
-
-    # Other callbacks
-    elif data == "ping":
-        start = time.time()
-        await callback_query.message.edit_text("🏓 Pinging...")
-        latency = round((time.time() - start) * 1000, 2)
-        await callback_query.message.edit_text(f"🏓 **Pong!**\nLatency: `{latency} ms`", reply_markup=back_to_main(), parse_mode=ParseMode.MARKDOWN)
-    elif data == "animation":
-        gif_url = random.choice(ANIMATIONS)
-        await callback_query.message.reply_animation(animation=gif_url, caption="🌊 **Aquatic Power!**", parse_mode=ParseMode.MARKDOWN)
-        await callback_query.message.edit_text("🎬 **Animation sent!**", reply_markup=back_to_main())
-    elif data == "extra_animation":
-        gif_url = random.choice(EXTRA_ANIMATIONS)
-        await callback_query.message.reply_animation(animation=gif_url, caption="🐠 **Extra Aquatic Animation!**", parse_mode=ParseMode.MARKDOWN)
-        await callback_query.message.edit_text("🎞️ **Extra animation sent!**", reply_markup=back_to_main())
-    elif data == "health":
-        await manager.health_check()
-        await userbot_manager.health_check()
-        status_text = manager.get_status() + "\n\n**Userbots:**\n" + userbot_manager.get_status()
-        logs = await db_get_recent_logs(5)
-        log_text = "\n".join([f"`{log[0]}` - {log[1]}: {log[2]}" for log in logs]) if logs else "No recent logs."
-        await callback_query.message.edit_text(
-            f"**❤️ Health Check Completed**\n\n**Current Status:**\n{status_text}\n\n**Recent Logs:**\n{log_text}",
-            reply_markup=back_to_main(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-    elif data == "web":
-        await callback_query.message.edit_text(
-            "🌐 Web dashboard is disabled. Use Telegram commands only.",
-            reply_markup=back_to_main()
-        )
-    elif data == "admin_panel":
-        if not (await is_admin(user_id) or await is_owner(user_id)):
-            await callback_query.message.edit_text("⚠️ Admin only.", reply_markup=back_to_main())
-            return
-        kb = InlineKeyboardMarkup(row_width=2)
-        kb.add(InlineKeyboardButton("📊 Statistics", callback_data="stats"))
-        kb.add(InlineKeyboardButton("👥 Admins", callback_data="list_admins"))
-        kb.add(InlineKeyboardButton("➕ Add Admin", callback_data="add_admin"))
-        kb.add(InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin"))
-        kb.add(InlineKeyboardButton("📢 Broadcast", callback_data="broadcast"))
-        kb.add(InlineKeyboardButton("🔒 Lock/Unlock", callback_data="lock_toggle"))
-        kb.add(InlineKeyboardButton("⬅️ Back", callback_data="main_menu"))
-        await callback_query.message.edit_text("👑 **Admin Panel**", reply_markup=kb)
-    elif data == "stats":
-        await stats_command(client, callback_query.message)
-    elif data == "list_admins":
-        admins = await db_get_admins()
-        lines = [f"- `{uid}`" for uid in admins]
-        await callback_query.message.edit_text("👑 **Admins:**\n" + "\n".join(lines), reply_markup=back_to_main(), parse_mode=ParseMode.MARKDOWN)
-    elif data == "add_admin":
-        await callback_query.message.edit_text("➕ Send `/addadmin <user_id>`", reply_markup=back_to_main())
-    elif data == "remove_admin":
-        await callback_query.message.edit_text("➖ Send `/removeadmin <user_id>`", reply_markup=back_to_main())
-    elif data == "broadcast":
-        await callback_query.message.edit_text("📢 Reply to a message and use /broadcast", reply_markup=back_to_main())
-    elif data == "lock_toggle":
-        global bot_locked
-        bot_locked = not bot_locked
-        status = "locked" if bot_locked else "unlocked"
-        await callback_query.message.edit_text(f"🔒 Bot is now {status}.", reply_markup=back_to_main())
-
-# --------------------------
-# BACKGROUND HEALTH CHECK LOOP
-# --------------------------
-async def health_check_loop():
-    while True:
-        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-        try:
-            await manager.health_check()
-            await userbot_manager.health_check()
-        except Exception as e:
-            print(f"Health check error: {e}")
-
-# --------------------------
-# MAIN ENTRY POINT
-# --------------------------
-bot_locked = False
-
-async def main():
-    print("🌊 Starting Super Duper Bot Hoster (Telegram Bot Only)...")
-    print(f"Using token: {MASTER_BOT_TOKEN[:10]}... (masked)")
-
-    # 1. Database init
-    try:
-        await init_db()
-        print("✅ Database initialized.")
-    except Exception as e:
-        print("❌ Database init failed:")
-        traceback.print_exc()
-        sys.exit(1)
-
-    # 2. Load bots
-    try:
-        await manager.load_from_db()
-        print(f"✅ Loaded {len(manager.bot_info)} bots from DB.")
-    except Exception as e:
-        print("❌ Failed to load bots:")
-        traceback.print_exc()
-        sys.exit(1)
-
-    # 3. Load userbots
-    try:
-        await userbot_manager.load_from_db()
-        print(f"✅ Loaded {len(userbot_manager.userbot_info)} userbots from DB.")
-    except Exception as e:
-        print("❌ Failed to load userbots:")
-        traceback.print_exc()
-        sys.exit(1)
-
-    # 4. Start master client
-    try:
-        await master.start()
-        print("✅ Master client started.")
-    except Exception as e:
-        print("❌ Master client start failed:")
-        traceback.print_exc()
-        sys.exit(1)
-
-    # 5. Start background tasks
-    asyncio.create_task(health_check_loop())
-    print("✅ Health check loop started.")
-
-    # Web server is intentionally not started
-    print("🌐 Web dashboard is DISABLED (only Telegram bot).")
-
-    print("✅ Master control is running. Press Ctrl+C to stop.")
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n🛑 Shutting down...")
-    except Exception as e:
-        print("Unhandled exception in main loop:")
-        traceback.print_exc()
+# ============================================
+# RUN
+# ============================================
+print("🔥 SastaOTP Bot is running...")
+bot.infinity_polling()
