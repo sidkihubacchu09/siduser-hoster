@@ -92,13 +92,11 @@ def to_float(value, default=None):
     except (TypeError, ValueError):
         return default
 
-
-def get_panel_price(service, country):
+def get_panel_price_info(service, country):
     """
     Read the live price from getPrices so the bot never requests a
     number above the current panel price.
-    Supports the common {country: {service: {cost: ...}}} format and
-    a few compatible price/cost variants.
+    Extracts the CHEAPEST available price and its operator.
     """
     data = sasta_api_call({
         "action": "getPrices",
@@ -108,7 +106,7 @@ def get_panel_price(service, country):
     })
 
     if not isinstance(data, dict) or data.get("status") == "ERROR":
-        return None
+        return None, "any"
 
     country_keys = [str(country), country]
     country_block = None
@@ -117,36 +115,69 @@ def get_panel_price(service, country):
             country_block = data[key]
             break
 
+    service_block = None
     if isinstance(country_block, dict):
         service_block = country_block.get(service)
 
-        if isinstance(service_block, dict):
-            for key in ("cost", "price", "amount"):
-                value = to_float(service_block.get(key))
-                if value is not None:
-                    return value
-
-        value = to_float(service_block)
-        if value is not None:
-            return value
-
     # Compatible fallback: search one level deeper for the selected service.
-    service_block = data.get(service)
-    if isinstance(service_block, dict):
-        for key in (str(country), country):
-            block = service_block.get(key)
-            if isinstance(block, dict):
-                for price_key in ("cost", "price", "amount"):
-                    value = to_float(block.get(price_key))
-                    if value is not None:
-                        return value
-            else:
-                value = to_float(block)
-                if value is not None:
-                    return value
+    if service_block is None:
+        service_block_alt = data.get(service)
+        if isinstance(service_block_alt, dict):
+            for key in country_keys:
+                if key in service_block_alt:
+                    service_block = service_block_alt[key]
+                    break
 
-    return None
+    if not isinstance(service_block, dict):
+        return None, "any"
 
+    best_price = float('inf')
+    best_operator = "any"
+    found = False
+
+    # 1. Direct block (e.g. {"cost": 43, "count": 100})
+    direct_price = None
+    for key in ("cost", "price", "amount"):
+        if key in service_block:
+            direct_price = to_float(service_block[key])
+            break
+            
+    if direct_price is not None:
+        count = to_float(service_block.get("count"), 1)
+        if count > 0:
+            best_price = direct_price
+            found = True
+
+    # 2. Iterate through nested dictionaries (operators) or price-to-count mapping
+    for k, v in service_block.items():
+        if isinstance(v, dict):
+            # Nested operator (e.g., "tele2": {"cost": 43, "count": 150})
+            op_price = None
+            for key in ("cost", "price", "amount"):
+                if key in v:
+                    op_price = to_float(v[key])
+                    break
+            if op_price is not None:
+                count = to_float(v.get("count"), 1)
+                # Check if it has stock AND is cheaper
+                if count > 0 and op_price < best_price:
+                    best_price = op_price
+                    best_operator = k
+                    found = True
+        else:
+            # price-to-count format (e.g., {"43": 100})
+            try:
+                p_val = float(k)
+                c_val = int(v)
+                if c_val > 0 and p_val < best_price:
+                    best_price = p_val
+                    found = True
+            except ValueError:
+                pass
+
+    if found:
+        return best_price, best_operator
+    return None, "any"
 
 def build_service_keyboard(animation_frame=0):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -408,8 +439,9 @@ def country_selected(call):
     service = user_selection[user_id]["service"]
     service_name = [name for name, code in SERVICES.items() if code == service][0]
 
-    # Read the current panel price before purchase.
-    panel_price = get_panel_price(service, country_code)
+    # Read the current panel price and best operator before purchase.
+    panel_price, best_operator = get_panel_price_info(service, country_code)
+    
     if panel_price is None:
         bot.edit_message_text(
             "❌ <b>Could not read the current price from the panel.</b>\n"
@@ -422,6 +454,7 @@ def country_selected(call):
         return
 
     user_selection[user_id]["panel_price"] = panel_price
+    user_selection[user_id]["operator"] = best_operator
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy"))
@@ -457,14 +490,14 @@ def confirm_cancel_buy(call):
     service = user_selection[user_id]["service"]
     country = user_selection[user_id]["country"]
     panel_price = user_selection[user_id].get("panel_price")
+    operator = user_selection[user_id].get("operator", "any") # We now use the CHEAPEST operator we found
 
-    # Use the live panel price as maxPrice so the API cannot return
-    # a number above the price shown to the user.
+    # We use the specific cheapest operator instead of arbitrary 'any' 
     number_params = {
         "action": "getNumber",
         "service": service,
         "country": country,
-        "operator": "any",
+        "operator": operator,
         "format": "json"
     }
 
@@ -704,5 +737,5 @@ def back_to_menu(call):
 # ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with live panel price protection (operator=any)...")
+print("🔥 SastaOTP Bot is running with live panel price protection (cheapest operator)...")
 bot.infinity_polling()
