@@ -8,15 +8,15 @@ from telebot import types
 # ============================================
 # CONFIG
 # ============================================
-BOT_TOKEN = "8240132325:AAG090O_B-wI33-Hd5WCMvuwiUnOYOuWeYQ"
+BOT_TOKEN = "8732063177:AAFjqxNLHh0moa_8daUbThK3zVoi_B6wXSU"
 
 # SastaOTP API key
 SASTA_API_KEY = "stp_0ac4e9ace00367b27b27afe499242f59e73c405035866819"
 SASTA_BASE_URL = "https://sastasms.pro/stubs/handler_api.php"
 
-ADMIN_ID = 6517403970
+ADMIN_ID = 2119464081
 ADMIN_CHAT_ID = -1003941256566
-UPI_ID = "urx.aditya@fam"
+UPI_ID = "7722026588@ptaxis"
 
 # ============================================
 # BOT INIT
