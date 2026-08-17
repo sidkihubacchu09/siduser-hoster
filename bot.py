@@ -94,90 +94,108 @@ def to_float(value, default=None):
 
 def get_panel_price_info(service, country):
     """
-    Read the live price from getPrices so the bot never requests a
-    number above the current panel price.
-    Extracts the CHEAPEST available price and its operator.
+    Read the live panel price from getPrices.
+
+    Supports the common compatible-API response formats:
+      {"91":{"tg":{"cost":"34","count":10}}}
+      {"91":{"tg":{"price":"34","count":10}}}
+      {"91":{"tg":{"34":10,"35":20}}}
+      {"tg":{"cost":"34","count":10}}
     """
     data = sasta_api_call({
         "action": "getPrices",
+        "country": str(country),
         "service": service,
-        "country": country,
         "format": "json"
     })
 
-    if not isinstance(data, dict) or data.get("status") == "ERROR":
-        return None, "any"
+    if not isinstance(data, dict):
+        return None
 
-    country_keys = [str(country), country]
-    country_block = None
-    for key in country_keys:
-        if key in data and isinstance(data[key], dict):
-            country_block = data[key]
-            break
+    # API error response
+    if str(data.get("status", "")).upper() == "ERROR":
+        return None
 
-    service_block = None
-    if isinstance(country_block, dict):
-        service_block = country_block.get(service)
+    target_service = str(service)
+    target_country = str(country)
 
-    # Compatible fallback: search one level deeper for the selected service.
-    if service_block is None:
-        service_block_alt = data.get(service)
-        if isinstance(service_block_alt, dict):
-            for key in country_keys:
-                if key in service_block_alt:
-                    service_block = service_block_alt[key]
-                    break
+    # First, locate the selected country's block.
+    country_blocks = []
+    for key, value in data.items():
+        if str(key) == target_country and isinstance(value, dict):
+            country_blocks.append(value)
 
-    if not isinstance(service_block, dict):
-        return None, "any"
+    # Some providers return the service block directly.
+    if isinstance(data.get(target_service), dict):
+        country_blocks.append({target_service: data[target_service]})
 
-    best_price = float('inf')
-    best_operator = "any"
-    found = False
+    # Some providers return only the selected service block after filters.
+    if isinstance(data.get("cost"), (str, int, float)) or isinstance(data.get("price"), (str, int, float)):
+        country_blocks.append({target_service: data})
 
-    # 1. Direct block (e.g. {"cost": 43, "count": 100})
-    direct_price = None
-    for key in ("cost", "price", "amount"):
-        if key in service_block:
-            direct_price = to_float(service_block[key])
-            break
-            
-    if direct_price is not None:
-        count = to_float(service_block.get("count"), 1)
-        if count > 0:
-            best_price = direct_price
-            found = True
+    prices = []
 
-    # 2. Iterate through nested dictionaries (operators) or price-to-count mapping
-    for k, v in service_block.items():
-        if isinstance(v, dict):
-            # Nested operator (e.g., "tele2": {"cost": 43, "count": 150})
-            op_price = None
-            for key in ("cost", "price", "amount"):
-                if key in v:
-                    op_price = to_float(v[key])
-                    break
-            if op_price is not None:
-                count = to_float(v.get("count"), 1)
-                # Check if it has stock AND is cheaper
-                if count > 0 and op_price < best_price:
-                    best_price = op_price
-                    best_operator = k
-                    found = True
-        else:
-            # price-to-count format (e.g., {"43": 100})
-            try:
-                p_val = float(k)
-                c_val = int(v)
-                if c_val > 0 and p_val < best_price:
-                    best_price = p_val
-                    found = True
-            except ValueError:
-                pass
+    def add_price(value, count=1):
+        price = to_float(value)
+        qty = to_float(count, 1)
+        if price is not None and price > 0 and qty > 0:
+            prices.append(price)
 
-    if found:
-        return best_price, best_operator
-    return None, "any"
+    def scan_service_block(block):
+        if not isinstance(block, dict):
+            return
+
+        # Direct form: {"cost": "34", "count": 100}
+        for key in ("cost", "price", "amount"):
+            if key in block:
+                add_price(block.get(key), block.get("count", 1))
+                break
+
+        # Price -> count form: {"34": 100, "35": 20}
+        for key, value in block.items():
+            if isinstance(value, (int, float, str)):
+                try:
+                    price_key = float(key)
+                    qty = float(value)
+                    if price_key > 0 and qty > 0:
+                        prices.append(price_key)
+                except (TypeError, ValueError):
+                    pass
+
+        # Operator form: {"op1":{"cost":"34","count":100}}
+        for value in block.values():
+            if isinstance(value, dict):
+                for key in ("cost", "price", "amount"):
+                    if key in value:
+                        add_price(value.get(key), value.get("count", 1))
+                        break
+
+    for country_block in country_blocks:
+        service_block = country_block.get(target_service) if isinstance(country_block, dict) else None
+        if isinstance(service_block, dict):
+            scan_service_block(service_block)
+        elif isinstance(country_block, dict):
+            scan_service_block(country_block)
+
+    # Last-resort recursive scan: find the selected service anywhere in the JSON.
+    if not prices:
+        def recursive_find(obj):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if str(key) == target_service and isinstance(value, dict):
+                        scan_service_block(value)
+                    recursive_find(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    recursive_find(item)
+
+        recursive_find(data)
+
+    if not prices:
+        return None
+
+    # The panel displays the cheapest available price for this service/country.
+    return min(prices)
 
 def build_service_keyboard(animation_frame=0):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -490,14 +508,15 @@ def confirm_cancel_buy(call):
     service = user_selection[user_id]["service"]
     country = user_selection[user_id]["country"]
     panel_price = user_selection[user_id].get("panel_price")
-    operator = user_selection[user_id].get("operator", "any") # We now use the CHEAPEST operator we found
 
-    # We use the specific cheapest operator instead of arbitrary 'any' 
+    # Request a number at or below the exact live panel price.
+    # Do not use the getNumber response price for charging because many
+    # compatible APIs return ACCESS_NUMBER without a price field.
     number_params = {
         "action": "getNumber",
         "service": service,
         "country": country,
-        "operator": operator,
+        "operator": "any",
         "format": "json"
     }
 
@@ -520,8 +539,9 @@ def confirm_cancel_buy(call):
     order_id = data.get("order_id")
     number = data.get("number")
 
-    raw_price = data.get("price", panel_price if panel_price is not None else 0.0)
-    price = to_float(raw_price, 0.0)
+    # IMPORTANT: use the live panel price for the transaction amount.
+    # getNumber may return no price or a different internal field.
+    price = to_float(panel_price, None)
 
     if price is None or price <= 0:
         bot.edit_message_text(
