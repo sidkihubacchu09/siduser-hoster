@@ -3,6 +3,7 @@ import requests
 import sqlite3
 import time
 import json
+import threading
 from telebot import types
 
 # ============================================
@@ -81,6 +82,132 @@ def sasta_api_call(params):
             return {"status": "ERROR", "message": f"HTTP {resp.status_code}"}
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
+
+# --------------------------------------------
+# PRICE / BUTTON HELPERS
+# --------------------------------------------
+def to_float(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_panel_price(service, country):
+    """
+    Read the live price from getPrices so the bot never requests a
+    number above the current panel price.
+    Supports the common {country: {service: {cost: ...}}} format and
+    a few compatible price/cost variants.
+    """
+    data = sasta_api_call({
+        "action": "getPrices",
+        "service": service,
+        "country": country,
+        "format": "json"
+    })
+
+    if not isinstance(data, dict) or data.get("status") == "ERROR":
+        return None
+
+    country_keys = [str(country), country]
+    country_block = None
+    for key in country_keys:
+        if key in data and isinstance(data[key], dict):
+            country_block = data[key]
+            break
+
+    if isinstance(country_block, dict):
+        service_block = country_block.get(service)
+
+        if isinstance(service_block, dict):
+            for key in ("cost", "price", "amount"):
+                value = to_float(service_block.get(key))
+                if value is not None:
+                    return value
+
+        value = to_float(service_block)
+        if value is not None:
+            return value
+
+    # Compatible fallback: search one level deeper for the selected service.
+    service_block = data.get(service)
+    if isinstance(service_block, dict):
+        for key in (str(country), country):
+            block = service_block.get(key)
+            if isinstance(block, dict):
+                for price_key in ("cost", "price", "amount"):
+                    value = to_float(block.get(price_key))
+                    if value is not None:
+                        return value
+            else:
+                value = to_float(block)
+                if value is not None:
+                    return value
+
+    return None
+
+
+def build_service_keyboard(animation_frame=0):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    frames = ("⚡", "✨", "💠", "✨")
+    logo = frames[animation_frame % len(frames)]
+
+    for name, code in SERVICES.items():
+        # Small animated logo movement inside the button.
+        text = f"{logo} {name}" if animation_frame % 2 == 0 else f"{name} {logo}"
+        markup.add(types.InlineKeyboardButton(text, callback_data=f"service_{code}"))
+
+    markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back"))
+    return markup
+
+
+def build_country_keyboard(animation_frame=0):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    frames = ("⚡", "✨", "💠", "✨")
+    logo = frames[animation_frame % len(frames)]
+
+    for name, code in COUNTRIES.items():
+        text = f"{logo} {name}" if animation_frame % 2 == 0 else f"{name} {logo}"
+        markup.add(types.InlineKeyboardButton(text, callback_data=f"country_{code}"))
+
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="service_back"))
+    return markup
+
+
+# Message-id -> animation token. A new callback cancels the old animation.
+button_animation_tokens = {}
+
+
+def animate_button_logo(chat_id, message_id, keyboard_builder, frames=4, delay=0.45):
+    token = object()
+    button_animation_tokens[message_id] = token
+
+    def worker():
+        try:
+            for frame in range(1, frames + 1):
+                time.sleep(delay)
+
+                if button_animation_tokens.get(message_id) is not token:
+                    break
+
+                bot.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    reply_markup=keyboard_builder(frame)
+                )
+        except Exception:
+            # Ignore "message is not modified", deleted-message, and fast-click races.
+            pass
+        finally:
+            if button_animation_tokens.get(message_id) is token:
+                button_animation_tokens.pop(message_id, None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def cancel_button_animation(message_id):
+    button_animation_tokens.pop(message_id, None)
 
 # ============================================
 # SERVICES & COUNTRIES
@@ -229,11 +356,13 @@ def buy_number(message):
         return
 
     # Show service selection
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    for name, code in SERVICES.items():
-        markup.add(types.InlineKeyboardButton(name, callback_data=f"service_{code}"))
-    markup.add(types.InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_back"))
-    bot.send_message(chat_id, "📱 <b>Select the service:</b>", reply_markup=markup, parse_mode="HTML")
+    sent = bot.send_message(
+        chat_id,
+        "📱 <b>Select the service:</b>",
+        reply_markup=build_service_keyboard(0),
+        parse_mode="HTML"
+    )
+    animate_button_logo(chat_id, sent.message_id, build_service_keyboard)
 
 # ============================================
 # SERVICE SELECTION CALLBACK
@@ -244,17 +373,22 @@ def service_selected(call):
     user_id = call.from_user.id
     service_code = call.data.split("_")[1]
 
+    cancel_button_animation(call.message.message_id)
+
     # Store selected service
     if user_id not in user_selection:
         user_selection[user_id] = {}
     user_selection[user_id]["service"] = service_code
 
     # Show country selection
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    for name, code in COUNTRIES.items():
-        markup.add(types.InlineKeyboardButton(name, callback_data=f"country_{code}"))
-    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="service_back"))
-    bot.edit_message_text("🌍 <b>Select your country:</b>", chat_id, call.message.message_id, reply_markup=markup, parse_mode="HTML")
+    bot.edit_message_text(
+        "🌍 <b>Select your country:</b>",
+        chat_id,
+        call.message.message_id,
+        reply_markup=build_country_keyboard(0),
+        parse_mode="HTML"
+    )
+    animate_button_logo(chat_id, call.message.message_id, build_country_keyboard)
     bot.answer_callback_query(call.id)
 
 # ============================================
@@ -266,11 +400,28 @@ def country_selected(call):
     user_id = call.from_user.id
     country_code = call.data.split("_")[1]
 
+    cancel_button_animation(call.message.message_id)
+
     # Store selected country
     user_selection[user_id]["country"] = country_code
 
     service = user_selection[user_id]["service"]
     service_name = [name for name, code in SERVICES.items() if code == service][0]
+
+    # Read the current panel price before purchase.
+    panel_price = get_panel_price(service, country_code)
+    if panel_price is None:
+        bot.edit_message_text(
+            "❌ <b>Could not read the current price from the panel.</b>\n"
+            "Please try again in a moment.",
+            chat_id,
+            call.message.message_id,
+            parse_mode="HTML"
+        )
+        bot.answer_callback_query(call.id)
+        return
+
+    user_selection[user_id]["panel_price"] = panel_price
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy"))
@@ -278,9 +429,12 @@ def country_selected(call):
 
     bot.edit_message_text(
         f"📞 <b>Service:</b> {service_name}\n🌍 <b>Country:</b> {country_code}\n\n"
-        f"💰 Price will be shown after purchase.\n"
+        f"💰 <b>Panel Price:</b> <code>{panel_price:.2f}</code> INR\n"
         f"Confirm purchase?",
-        chat_id, call.message.message_id, reply_markup=markup, parse_mode="HTML"
+        chat_id,
+        call.message.message_id,
+        reply_markup=markup,
+        parse_mode="HTML"
     )
     bot.answer_callback_query(call.id)
 
@@ -302,15 +456,22 @@ def confirm_cancel_buy(call):
     # Confirm purchase
     service = user_selection[user_id]["service"]
     country = user_selection[user_id]["country"]
+    panel_price = user_selection[user_id].get("panel_price")
 
-    # ⭐ FIX: added "operator": "any" to get the cheapest number
-    data = sasta_api_call({
+    # Use the live panel price as maxPrice so the API cannot return
+    # a number above the price shown to the user.
+    number_params = {
         "action": "getNumber",
         "service": service,
         "country": country,
-        "operator": "any",      # <--- THIS IS THE FIX
+        "operator": "any",
         "format": "json"
-    })
+    }
+
+    if panel_price is not None:
+        number_params["maxPrice"] = f"{panel_price:.2f}"
+
+    data = sasta_api_call(number_params)
 
     if data.get("status") != "OK":
         bot.edit_message_text(
@@ -325,7 +486,21 @@ def confirm_cancel_buy(call):
     activation_id = data.get("activation_id")
     order_id = data.get("order_id")
     number = data.get("number")
-    price = float(data.get("price", 0.0))
+
+    raw_price = data.get("price", panel_price if panel_price is not None else 0.0)
+    price = to_float(raw_price, 0.0)
+
+    if price is None or price <= 0:
+        bot.edit_message_text(
+            "❌ <b>Invalid price returned by the API.</b>\nPlease try again.",
+            chat_id,
+            call.message.message_id,
+            parse_mode="HTML"
+        )
+        bot.answer_callback_query(call.id)
+        if user_id in user_selection:
+            del user_selection[user_id]
+        return
 
     # Check if user has enough balance
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
@@ -529,5 +704,5 @@ def back_to_menu(call):
 # ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with real-time price from getNumber (operator=any)...")
+print("🔥 SastaOTP Bot is running with live panel price protection (operator=any)...")
 bot.infinity_polling()
