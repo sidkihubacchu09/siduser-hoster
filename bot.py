@@ -109,7 +109,7 @@ COUNTRIES = {
 }
 
 # Temporary storage for user selections
-user_selection = {}  # user_id -> {"service": code, "country": code, "price": float}
+user_selection = {}  # user_id -> {"service": code, "country": code}
 
 # ============================================
 # REPLY KEYBOARD (MAIN MENU)
@@ -258,7 +258,7 @@ def service_selected(call):
     bot.answer_callback_query(call.id)
 
 # ============================================
-# COUNTRY SELECTION CALLBACK (FIXED PRICE)
+# COUNTRY SELECTION CALLBACK (NO PRICE FETCH – will get price from getNumber)
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("country_"))
 def country_selected(call):
@@ -270,49 +270,22 @@ def country_selected(call):
     user_selection[user_id]["country"] = country_code
 
     service = user_selection[user_id]["service"]
-
-    # Fetch price from SastaOTP
-    price_data = sasta_api_call({
-        "action": "getPrices",
-        "service": service,
-        "country": country_code,
-        "format": "json"
-    })
-
-    price = None
-    if price_data.get("status") == "OK":
-        # Try to extract price from nested structure: prices[country][service]
-        try:
-            price = price_data["prices"][country_code][service]
-        except (KeyError, TypeError):
-            # Fallback: try direct 'price' field
-            price = price_data.get("price")
-    # If price is still None, set to 0.0 to avoid errors, but we'll show "Unknown"
-    if price is None:
-        price = 0.0
-        confirm_text = "⚠️ Could not fetch price. Continue anyway?"
-    else:
-        price = float(price)
-        confirm_text = f"💰 <b>Price:</b> <code>{price:.2f}</code> INR\nConfirm purchase?"
-
-    # Store the exact price for later deduction
-    user_selection[user_id]["price"] = price
+    service_name = [name for name, code in SERVICES.items() if code == service][0]
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ Confirm", callback_data="confirm_buy"))
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_buy"))
 
-    # Show service name (get from SERVICES dict by code)
-    service_name = [name for name, code in SERVICES.items() if code == service][0] if service in [code for code in SERVICES.values()] else service
-
     bot.edit_message_text(
-        f"📞 <b>Service:</b> {service_name}\n🌍 <b>Country:</b> {country_code}\n{confirm_text}",
+        f"📞 <b>Service:</b> {service_name}\n🌍 <b>Country:</b> {country_code}\n\n"
+        f"💰 Price will be shown after purchase.\n"
+        f"Confirm purchase?",
         chat_id, call.message.message_id, reply_markup=markup, parse_mode="HTML"
     )
     bot.answer_callback_query(call.id)
 
 # ============================================
-# CONFIRM / CANCEL BUY (FIXED DEDUCTION)
+# CONFIRM / CANCEL BUY (PRICE FETCHED FROM getNumber)
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data in ["confirm_buy", "cancel_buy"])
 def confirm_cancel_buy(call):
@@ -322,7 +295,6 @@ def confirm_cancel_buy(call):
     if call.data == "cancel_buy":
         bot.edit_message_text("❌ Purchase cancelled.", chat_id, call.message.message_id)
         bot.answer_callback_query(call.id)
-        # Clean up temp data
         if user_id in user_selection:
             del user_selection[user_id]
         return
@@ -330,9 +302,8 @@ def confirm_cancel_buy(call):
     # Confirm purchase
     service = user_selection[user_id]["service"]
     country = user_selection[user_id]["country"]
-    price = user_selection[user_id].get("price", 0.0)
 
-    # Call getNumber
+    # Call getNumber – this returns the actual price
     data = sasta_api_call({
         "action": "getNumber",
         "service": service,
@@ -346,7 +317,6 @@ def confirm_cancel_buy(call):
             chat_id, call.message.message_id, parse_mode="HTML"
         )
         bot.answer_callback_query(call.id)
-        # Clean up
         if user_id in user_selection:
             del user_selection[user_id]
         return
@@ -354,14 +324,24 @@ def confirm_cancel_buy(call):
     activation_id = data.get("activation_id")
     order_id = data.get("order_id")
     number = data.get("number")
-    # Use the stored price for deduction (if price is 0.0, fallback to what getNumber returns)
-    if price <= 0.0:
-        price = float(data.get("price", 0.0))
+    price = float(data.get("price", 0.0))
 
-    # Deduct balance
+    # Check if user has enough balance
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
     balance = row[0] if row else 0
+
+    if balance < price:
+        bot.edit_message_text(
+            f"❌ <b>Insufficient balance.</b>\nRequired: <code>{price:.2f}</code> INR\nYour balance: <code>{balance:.2f}</code> INR",
+            chat_id, call.message.message_id, parse_mode="HTML"
+        )
+        bot.answer_callback_query(call.id)
+        if user_id in user_selection:
+            del user_selection[user_id]
+        return
+
+    # Deduct balance
     new_balance = balance - price
     cursor.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, user_id))
 
@@ -544,10 +524,9 @@ def back_to_menu(call):
     chat_id = call.message.chat.id
     bot.edit_message_text("↩️ Returned to menu.", chat_id, call.message.message_id)
     bot.answer_callback_query(call.id)
-    # Send main menu again (or user can press start)
 
 # ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with reply keyboard and service selection...")
+print("🔥 SastaOTP Bot is running with real-time price from getNumber...")
 bot.infinity_polling()
