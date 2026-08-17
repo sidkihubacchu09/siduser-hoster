@@ -94,77 +94,102 @@ def to_float(value, default=None):
 
 def get_panel_price_info(service, country):
     """
-    Strictly reads the live panel price from getPrices and returns both
-    the cheapest price and its associated operator where stock is available.
+    Bulletproof recursive scanner. Hunts through any panel's JSON structure
+    to find the absolute lowest price associated with the requested service,
+    as long as the stock count is greater than 0.
     """
-    # Force JSON format return
     data = sasta_api_call({
         "action": "getPrices",
         "service": service,
-        "country": country,
-        "format": "json"
+        "country": country
     })
     
-    if not isinstance(data, dict) or data.get("status") == "ERROR":
+    if not isinstance(data, dict):
+        print(f"DEBUG [getPrices]: API did not return JSON. It returned: {data}")
+        return None, "any"
+        
+    if data.get("status") == "ERROR":
+        print(f"DEBUG [getPrices]: API returned an error: {data}")
         return None, "any"
 
     country_str = str(country)
     service_str = str(service)
 
-    # Drill down if the API returns full nested structure: {"country": {"service": {...}}}
-    if country_str in data and isinstance(data[country_str], dict):
-        data = data[country_str]
-    if service_str in data and isinstance(data[service_str], dict):
-        data = data[service_str]
+    # Attempt to narrow down the JSON block to just our country and service
+    target_data = data
+    
+    # Sometimes panels return {"country_id": {"service_id": {...}}}
+    if country_str in target_data and isinstance(target_data[country_str], dict):
+        target_data = target_data[country_str]
+    # Sometimes panels return {"service_id": {"country_id": {...}}}
+    elif service_str in target_data and isinstance(target_data[service_str], dict):
+        target_data = target_data[service_str]
+        
+    # Keep digging if it's nested
+    if service_str in target_data and isinstance(target_data[service_str], dict):
+        target_data = target_data[service_str]
+    elif country_str in target_data and isinstance(target_data[country_str], dict):
+        target_data = target_data[country_str]
 
     best_price = float('inf')
     best_operator = "any"
     found = False
 
-    # Check if the remaining dictionary is directly a price object: {"cost": 43.57, "count": 100}
-    cost_val = data.get("cost", data.get("price"))
-    if cost_val is not None:
-        count_val = data.get("count", 0)
-        try:
-            p_val = float(cost_val)
-            c_val = int(count_val)
-            if c_val > 0:
-                return p_val, "any"
-        except (ValueError, TypeError):
-            pass
-
-    # Otherwise, iterate through keys assuming it's a map of operators or prices
-    for key, value in data.items():
-        # Format A: "operator_name": {"cost": 43.57, "count": 100}
-        if isinstance(value, dict):
-            c_val = value.get("cost", value.get("price"))
-            qty = value.get("count", 0)
-            if c_val is not None:
-                try:
-                    p_val = float(c_val)
-                    q_val = int(qty)
-                    if q_val > 0 and p_val < best_price:
-                        best_price = p_val
-                        best_operator = str(key)
-                        found = True
-                except (ValueError, TypeError):
-                    pass
-                    
-        # Format B: "43.57": 100  (key is the price, value is the stock count)
-        elif isinstance(value, (int, float, str)) and str(key).lower() not in ("cost", "price", "count"):
+    # Recursive function to scan every single key inside the narrowed JSON block
+    def hunt_for_price(d, current_op="any"):
+        nonlocal best_price, best_operator, found
+        if not isinstance(d, dict):
+            return
+            
+        # Case 1: The current dictionary block contains a "cost" or "price" key directly
+        cost = d.get("cost", d.get("price"))
+        if cost is not None:
+            count = d.get("count", 0)
             try:
-                p_val = float(key)
-                q_val = int(value)
-                if q_val > 0 and p_val < best_price:
-                    best_price = p_val
-                    best_operator = "any"
+                p = float(cost)
+                c = int(count)
+                if c > 0 and p < best_price:
+                    best_price = p
+                    best_operator = current_op
                     found = True
             except (ValueError, TypeError):
                 pass
-                
+            return # Found a price object, no need to dig deeper in this branch
+
+        # Case 2: The current dictionary is a map of {"price_number": stock_count}
+        is_price_map = False
+        for k, v in d.items():
+            if isinstance(v, (int, float, str)) and str(k).replace('.','',1).isdigit():
+                try:
+                    p = float(k)
+                    c = int(v)
+                    is_price_map = True
+                    if c > 0 and p < best_price:
+                        best_price = p
+                        best_operator = current_op
+                        found = True
+                except (ValueError, TypeError):
+                    pass
+        if is_price_map:
+            return
+
+        # If neither of the above, keep digging into nested dictionaries
+        for k, v in d.items():
+            if isinstance(v, dict):
+                # We assume any weird key name that isn't the service or country is an operator route
+                next_op = current_op
+                if str(k) not in (country_str, service_str, "cost", "price", "count"):
+                    next_op = str(k)
+                hunt_for_price(v, next_op)
+
+    # Execute the hunt on the isolated data
+    hunt_for_price(target_data)
+
     if found:
         return best_price, best_operator
         
+    # If no price or stock > 0 was found, print the block to terminal so you can see why
+    print(f"DEBUG [getPrices]: Found no stock > 0 or no valid price data inside block: {target_data}")
     return None, "any"
 
 def build_service_keyboard(animation_frame=0):
@@ -432,8 +457,9 @@ def country_selected(call):
     
     if panel_price is None:
         bot.edit_message_text(
-            "❌ <b>Could not read the current price from the panel.</b>\n"
-            "Please try again in a moment.",
+            "❌ <b>Price Error or Out of Stock</b>\n"
+            "Could not read the price, or there are <b>0 numbers available</b> for this country/service combination right now.\n\n"
+            "Please try a different country.",
             chat_id,
             call.message.message_id,
             parse_mode="HTML"
@@ -728,5 +754,5 @@ def back_to_menu(call):
 # ============================================
 # RUN
 # ============================================
-print("🔥 SastaOTP Bot is running with live panel price protection...")
+print("🔥 SastaOTP Bot is running with the ULTIMATE recursive price parser...")
 bot.infinity_polling()
